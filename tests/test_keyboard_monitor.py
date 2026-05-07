@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from keyboard_monitor import KeyboardMonitor
 
 
@@ -77,3 +77,44 @@ def test_should_skip_stale_correction():
     # Queue has items — stale
     monitor._detection_queue.put(("check", ("abc", " ")))
     assert monitor._is_stale() is True
+
+
+# --- Notification feature: show_notifications flag ---
+
+
+def test_notify_correction_dispatches_when_flag_true():
+    """_notify_correction dispatches to main queue when show_notifications=True."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._config = MagicMock(show_notifications=True)
+    with patch("keyboard_monitor.NSOperationQueue") as mock_nsopq:
+        mock_mq = MagicMock()
+        mock_nsopq.mainQueue.return_value = mock_mq
+        monitor._notify_correction("ghbdtn", "привет")
+        mock_nsopq.mainQueue.assert_called_once()
+        mock_mq.addOperationWithBlock_.assert_called_once()
+
+
+def test_notify_correction_skips_when_flag_false():
+    """_notify_correction does NOT dispatch when show_notifications=False."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._config = MagicMock(show_notifications=False)
+    with patch("keyboard_monitor.NSOperationQueue") as mock_nsopq:
+        monitor._notify_correction("ghbdtn", "привет")
+        mock_nsopq.mainQueue.assert_not_called()
+
+
+def test_post_correction_notification_content():
+    """_post_correction_notification sets correct title and body and delivers."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    with patch("keyboard_monitor.NSUserNotification") as mock_notif_cls, \
+         patch("keyboard_monitor.NSUserNotificationCenter") as mock_center_cls:
+        mock_notif = MagicMock()
+        mock_notif_cls.alloc.return_value.init.return_value = mock_notif
+        mock_center = MagicMock()
+        mock_center_cls.defaultUserNotificationCenter.return_value = mock_center
+
+        monitor._post_correction_notification("ghbdtn", "привет")
+
+        mock_notif.setTitle_.assert_called_once_with("Layout Switcher")
+        mock_notif.setInformativeText_.assert_called_once_with("ghbdtn → привет")
+        mock_center.deliverNotification_.assert_called_once_with(mock_notif)

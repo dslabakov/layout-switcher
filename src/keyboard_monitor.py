@@ -30,6 +30,7 @@ from AppKit import (
     NSWorkspaceDidActivateApplicationNotification,
     NSNotificationCenter,
 )
+from Foundation import NSOperationQueue, NSUserNotification, NSUserNotificationCenter
 
 from word_buffer import WordBuffer
 from layout_mapper import LayoutMapper
@@ -186,6 +187,7 @@ class KeyboardMonitor:
             original, corrected = result
             conv_boundary = self._convert_boundary(boundary, word)
             self._auto_corrector.correct(original, corrected, conv_boundary, extra)
+            self._notify_correction(original, corrected)
             if self._tracker:
                 self._tracker.record(original, corrected)
             return
@@ -205,6 +207,7 @@ class KeyboardMonitor:
                     conv_boundary = self._convert_boundary(boundary, trimmed)
                     full_boundary = trailing + conv_boundary
                     self._auto_corrector.correct(original, corrected, full_boundary, extra)
+                    self._notify_correction(original, corrected)
                     if self._tracker:
                         self._tracker.record(original, corrected)
                     return
@@ -248,6 +251,21 @@ class KeyboardMonitor:
     def _is_stale(self) -> bool:
         """Return True if detection queue has more items (word is not the latest)."""
         return not self._detection_queue.empty()
+
+    def _notify_correction(self, original: str, corrected: str):
+        """Dispatch a correction notification to the main thread if enabled."""
+        if not self._config.show_notifications:
+            return
+        NSOperationQueue.mainQueue().addOperationWithBlock_(
+            lambda: self._post_correction_notification(original, corrected)
+        )
+
+    def _post_correction_notification(self, original: str, corrected: str):
+        """Post a native macOS notification for a completed correction."""
+        notification = NSUserNotification.alloc().init()
+        notification.setTitle_("Layout Switcher")
+        notification.setInformativeText_(f"{original} → {corrected}")
+        NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(notification)
 
     def _could_be_word(self, word: str) -> bool:
         """Check if word could be a real word — letters + layout-mapped chars only."""

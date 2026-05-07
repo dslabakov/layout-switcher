@@ -11,3 +11,4 @@ ignore_words:
   - "gl"
   - "hf"
 log_errors: true
+show_notifications: false
