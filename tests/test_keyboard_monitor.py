@@ -546,3 +546,142 @@ def test_handle_hotkey_reads_last_completed_word_set_by_worker():
     monitor._handle_hotkey()
 
     monitor._auto_corrector.manual_convert.assert_called_once_with("ghbdtn", "привет", " ")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-EY: finalize_correction() called unconditionally after drain (FRAGILITY 4)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _make_worker_monitor(drain_result=None, correction_triggered=True):
+    """Build a minimal KeyboardMonitor for _detection_worker drain-path tests.
+
+    drain_result:           list returned by drain_replay_buffer (default: [])
+    correction_triggered:   if True, _handle_queue_item returns True (drain path taken)
+    """
+    import queue as q
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._detection_queue = q.Queue()
+    monitor._auto_corrector = MagicMock()
+    monitor._auto_corrector.drain_replay_buffer.return_value = drain_result or []
+    monitor._word_buffer = MagicMock()
+    monitor._word_buffer.add_char.return_value = None  # no completed word from replay
+    monitor._language_detector = MagicMock()
+    monitor._last_completed_word = None
+    return monitor
+
+
+def _run_worker_one_item(monitor, item):
+    """Feed one item into the worker loop and stop after it processes that item.
+
+    Patches _handle_queue_item so we can control the return value, feeds the
+    item via the queue, then runs the worker in a thread with a sentinel to stop.
+    """
+    import threading
+    import queue as q
+    from unittest.mock import patch
+
+    results = {}
+
+    original_handle = monitor._handle_queue_item.__func__ if hasattr(monitor._handle_queue_item, '__func__') else None
+
+    # We need to inject a stop mechanism. We'll replace _detection_queue with one
+    # that raises after the first item, via a sentinel pattern.
+    stop = threading.Event()
+    orig_get = monitor._detection_queue.get
+
+    call_count = [0]
+
+    def patched_get():
+        result = orig_get()
+        call_count[0] += 1
+        return result
+
+    monitor._detection_queue.get = patched_get
+
+    # Run the worker in a daemon thread; it will block on the second queue.get()
+    monitor._detection_queue.put(item)
+    worker_thread = threading.Thread(target=monitor._detection_worker, daemon=True)
+    worker_thread.start()
+    # Wait for the item to be consumed (finalize_correction should have been called by then)
+    import time
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if call_count[0] >= 1:
+            break
+        time.sleep(0.01)
+    # Give the worker a moment to finish the drain + finalize_correction() call
+    time.sleep(0.05)
+    return worker_thread
+
+
+def test_worker_calls_finalize_after_drain_with_correction():
+    """Worker calls finalize_correction() after drain when a correction occurred.
+
+    Simulates: ("check", ...) → _handle_queue_item returns True → drain → finalize.
+    """
+    monitor = _make_worker_monitor(drain_result=["a", "b"])
+
+    # Override _handle_queue_item to return True (drain path) for our check item
+    call_order = []
+    original_drain = monitor._auto_corrector.drain_replay_buffer
+
+    def recording_drain():
+        call_order.append("drain")
+        return original_drain()
+
+    def recording_finalize():
+        call_order.append("finalize")
+
+    monitor._auto_corrector.drain_replay_buffer = recording_drain
+    monitor._auto_corrector.finalize_correction = recording_finalize
+
+    # Patch _handle_queue_item to return True without doing real correction logic
+    monitor._handle_queue_item = lambda item: True
+
+    _run_worker_one_item(monitor, ("check", ("ghbdtn", " ")))
+
+    assert "drain" in call_order, "drain_replay_buffer must be called"
+    assert "finalize" in call_order, "finalize_correction must be called after drain"
+    assert call_order.index("drain") < call_order.index("finalize"), \
+        "drain must happen before finalize"
+
+
+def test_worker_calls_finalize_when_drain_empty():
+    """Worker calls finalize_correction() even when replay buffer is empty.
+
+    This is the common case: hotkey or check where no keys were typed during correction.
+    finalize must be unconditional — not guarded by 'if replayed'.
+    """
+    monitor = _make_worker_monitor(drain_result=[])  # empty drain
+
+    finalize_called = []
+    monitor._auto_corrector.finalize_correction = lambda: finalize_called.append(True)
+    monitor._handle_queue_item = lambda item: True  # drain path, no correction
+
+    _run_worker_one_item(monitor, ("hotkey", None))
+
+    assert finalize_called, "finalize_correction must be called even when drain returns []"
+
+
+def test_worker_skips_finalize_when_should_drain_false():
+    """Worker does NOT call finalize_correction() for items that skip drain (e.g. 'clear', 'complete').
+
+    finalize is only appropriate after the drain path. For no-drain items (should_drain=False),
+    _is_correcting was never set True and calling finalize is harmless (idempotent), but the
+    worker should still exercise the 'continue' branch correctly without calling drain or finalize.
+    """
+    monitor = _make_worker_monitor(drain_result=[])
+
+    drain_called = []
+    finalize_called = []
+    monitor._auto_corrector.drain_replay_buffer = lambda: drain_called.append(True) or []
+    monitor._auto_corrector.finalize_correction = lambda: finalize_called.append(True)
+
+    # Override _handle_queue_item to return False (no-drain path)
+    monitor._handle_queue_item = lambda item: False
+
+    _run_worker_one_item(monitor, ("clear",))
+
+    assert not drain_called, "drain_replay_buffer must NOT be called for no-drain items"
+    assert not finalize_called, "finalize_correction must NOT be called for no-drain items"

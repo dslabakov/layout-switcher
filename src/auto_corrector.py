@@ -79,42 +79,58 @@ class AutoCorrector:
         return chars
 
     def correct(self, original: str, corrected: str, boundary: str, extra: str = ""):
-        """Delete the original word + boundary + extra, type corrected + boundary + extra."""
+        """Delete the original word + boundary + extra, type corrected + boundary + extra.
+
+        NOTE: does NOT flip _is_correcting back to False on return. The caller
+        (KeyboardMonitor._detection_worker) must call finalize_correction() after
+        draining the replay buffer. This keeps _is_correcting True for the entire
+        correct-then-drain cycle, closing FRAGILITY 4 (replay race).
+        """
         with self._lock:
             self._is_correcting = True
-            try:
-                delete_count = len(original) + len(boundary) + len(extra)
-                self._send_backspaces(delete_count)
-                time.sleep(BLOCK_DELAY)
-                self._type_string(corrected)
-                self._type_string(boundary)
-                if extra:
-                    self._type_string(extra)
-                self._last_correction = CorrectionRecord(
-                    original=original,
-                    corrected=corrected,
-                    boundary=boundary,
-                    timestamp=time.time(),
-                )
-            finally:
-                self._is_correcting = False
+            delete_count = len(original) + len(boundary) + len(extra)
+            self._send_backspaces(delete_count)
+            time.sleep(BLOCK_DELAY)
+            self._type_string(corrected)
+            self._type_string(boundary)
+            if extra:
+                self._type_string(extra)
+            self._last_correction = CorrectionRecord(
+                original=original,
+                corrected=corrected,
+                boundary=boundary,
+                timestamp=time.time(),
+            )
 
     def undo(self):
-        """Undo the last correction."""
+        """Undo the last correction.
+
+        NOTE: same deferred-flag contract as correct() — does NOT flip
+        _is_correcting back to False. Caller must call finalize_correction()
+        after drain (closes the same FRAGILITY 4 race on the undo path).
+        """
         if not self.has_undoable_correction():
             return
         rec = self._last_correction
         with self._lock:
             self._is_correcting = True
-            try:
-                delete_count = len(rec.corrected) + len(rec.boundary)
-                self._send_backspaces(delete_count)
-                time.sleep(BLOCK_DELAY)
-                self._type_string(rec.original)
-                self._type_string(rec.boundary)
-                self._last_correction = None
-            finally:
-                self._is_correcting = False
+            delete_count = len(rec.corrected) + len(rec.boundary)
+            self._send_backspaces(delete_count)
+            time.sleep(BLOCK_DELAY)
+            self._type_string(rec.original)
+            self._type_string(rec.boundary)
+            self._last_correction = None
+
+    def finalize_correction(self):
+        """Flip _is_correcting back to False after the caller has drained the replay buffer.
+
+        Idempotent: safe to call when already False (no-op, no exception).
+        Must be called unconditionally by the worker after every drain, including
+        cases where no correction occurred (flag was never set True) and cases
+        where drain returned an empty list.
+        """
+        with self._lock:
+            self._is_correcting = False
 
     def manual_convert(self, original: str, converted: str, boundary: str):
         """Manually convert last word (triggered by hotkey)."""
