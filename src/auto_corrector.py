@@ -78,15 +78,6 @@ class AutoCorrector:
         self._replay_buffer.clear()
         return chars
 
-    def replay_buffered(self, monitor):
-        """Replay any keystrokes that were buffered during correction."""
-        if not self._replay_buffer:
-            return
-        chars = self._replay_buffer[:]
-        self._replay_buffer.clear()
-        for char in chars:
-            self._type_string(char)
-
     def correct(self, original: str, corrected: str, boundary: str, extra: str = ""):
         """Delete the original word + boundary + extra, type corrected + boundary + extra."""
         with self._lock:
