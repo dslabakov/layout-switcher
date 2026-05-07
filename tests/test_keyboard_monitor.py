@@ -1,17 +1,36 @@
 import logging
 import queue as q
 from unittest.mock import MagicMock, patch
-from keyboard_monitor import KeyboardMonitor
+from keyboard_monitor import (
+    KeyboardMonitor,
+    parse_hotkey,
+    _DEFAULT_HOTKEY_MODIFIERS,
+    _DEFAULT_HOTKEY_KEYCODE,
+)
+from Quartz import (
+    kCGEventFlagMaskControl,
+    kCGEventFlagMaskShift,
+    kCGEventFlagMaskCommand,
+    kCGEventFlagMaskAlternate,
+)
+
+
+def _make_monitor_with_default_hotkey():
+    """Build a KeyboardMonitor via __new__ with default hotkey fields pre-set."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._hotkey_modifiers = _DEFAULT_HOTKEY_MODIFIERS
+    monitor._hotkey_keycode = _DEFAULT_HOTKEY_KEYCODE
+    return monitor
 
 
 def test_hotkey_detection():
-    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor = _make_monitor_with_default_hotkey()
     ctrl_shift = 0x60104
     assert monitor._is_hotkey(ctrl_shift, 49) is True
 
 
 def test_hotkey_not_detected_without_modifiers():
-    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor = _make_monitor_with_default_hotkey()
     assert monitor._is_hotkey(0, 49) is False
 
 
@@ -165,3 +184,165 @@ def test_check_and_correct_no_debug_at_info_level(caplog):
         monitor._check_and_correct("ghbdtn", " ")
     debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
     assert len(debug_records) == 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# parse_hotkey — valid inputs
+# ────────────────────────────────────────────────────────────────────────────
+
+CTRL_SHIFT = kCGEventFlagMaskControl | kCGEventFlagMaskShift
+CTRL = kCGEventFlagMaskControl
+CMD = kCGEventFlagMaskCommand
+ALT = kCGEventFlagMaskAlternate
+
+# Keycode constants (HIToolbox/Events.h virtual key codes)
+KC_SPACE = 49
+KC_A = 0
+KC_ESCAPE = 53
+KC_TAB = 48
+KC_1 = 18
+
+
+def test_parse_hotkey_ctrl_shift_space():
+    """Standard ctrl+shift+space parses correctly."""
+    result = parse_hotkey("ctrl+shift+space")
+    assert result == (CTRL_SHIFT, KC_SPACE)
+
+
+def test_parse_hotkey_modifier_order_does_not_matter():
+    """Modifier order (shift+ctrl vs ctrl+shift) produces same flags."""
+    assert parse_hotkey("shift+ctrl+space") == parse_hotkey("ctrl+shift+space")
+
+
+def test_parse_hotkey_case_insensitive():
+    """CTRL+SHIFT+SPACE is same as ctrl+shift+space."""
+    assert parse_hotkey("CTRL+SHIFT+SPACE") == (CTRL_SHIFT, KC_SPACE)
+
+
+def test_parse_hotkey_whitespace_around_tokens():
+    """Whitespace around tokens is trimmed."""
+    assert parse_hotkey("  ctrl + shift + space  ") == (CTRL_SHIFT, KC_SPACE)
+
+
+def test_parse_hotkey_cmd_a():
+    """cmd+a parses to command flag + keycode for 'a'."""
+    result = parse_hotkey("cmd+a")
+    assert result == (CMD, KC_A)
+
+
+def test_parse_hotkey_option_escape():
+    """option+escape parses to alternate flag + keycode for escape."""
+    result = parse_hotkey("option+escape")
+    assert result == (ALT, KC_ESCAPE)
+
+
+def test_parse_hotkey_alt_tab():
+    """alt is an alias for option."""
+    assert parse_hotkey("alt+tab") == (ALT, KC_TAB)
+
+
+def test_parse_hotkey_ctrl_1():
+    """ctrl+1 parses to control flag + keycode for '1'."""
+    result = parse_hotkey("ctrl+1")
+    assert result == (CTRL, KC_1)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# parse_hotkey — invalid inputs (all must return None, no exception)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_parse_hotkey_empty_string():
+    assert parse_hotkey("") is None
+
+
+def test_parse_hotkey_none_input():
+    assert parse_hotkey(None) is None
+
+
+def test_parse_hotkey_no_modifier():
+    """A key with no modifier is invalid."""
+    assert parse_hotkey("space") is None
+
+
+def test_parse_hotkey_modifier_only():
+    """Modifier alone with no key is invalid."""
+    assert parse_hotkey("ctrl") is None
+
+
+def test_parse_hotkey_trailing_plus():
+    """Trailing + creates an empty token → invalid."""
+    assert parse_hotkey("ctrl+") is None
+
+
+def test_parse_hotkey_leading_plus():
+    """Leading + creates an empty token → invalid."""
+    assert parse_hotkey("+space") is None
+
+
+def test_parse_hotkey_double_plus():
+    """Double + creates an empty token → invalid."""
+    assert parse_hotkey("ctrl++space") is None
+
+
+def test_parse_hotkey_unknown_extra_token():
+    """An extra unknown token makes the spec invalid."""
+    assert parse_hotkey("ctrl+shift+space+extra") is None
+
+
+def test_parse_hotkey_unknown_modifier():
+    """meta is not a recognized modifier."""
+    assert parse_hotkey("meta+space") is None
+
+
+def test_parse_hotkey_unknown_key():
+    """foo is not a recognized key."""
+    assert parse_hotkey("ctrl+foo") is None
+
+
+def test_parse_hotkey_two_keys():
+    """Two keys (a and b) with one modifier is invalid."""
+    assert parse_hotkey("ctrl+shift+a+b") is None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Wiring tests — KeyboardMonitor reads config.hotkey and stores fields
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _make_config_mock(hotkey_value: str) -> MagicMock:
+    """Return a minimal Config mock with the given hotkey value."""
+    cfg = MagicMock()
+    cfg.hotkey = hotkey_value
+    return cfg
+
+
+def test_keyboard_monitor_init_stores_parsed_hotkey():
+    """KeyboardMonitor.__init__ parses config.hotkey and stores the fields."""
+    cfg = _make_config_mock("ctrl+a")
+    with patch("keyboard_monitor.WordBuffer"), \
+         patch("keyboard_monitor.LayoutMapper"), \
+         patch("keyboard_monitor.LanguageDetector"), \
+         patch("keyboard_monitor.AutoCorrector"), \
+         patch("keyboard_monitor.AppFilter"):
+        monitor = KeyboardMonitor(cfg)
+
+    assert monitor._hotkey_modifiers == CTRL
+    assert monitor._hotkey_keycode == KC_A
+
+
+def test_keyboard_monitor_init_fallback_on_bad_hotkey(caplog):
+    """KeyboardMonitor.__init__ falls back to ctrl+shift+space on bad hotkey and logs warning."""
+    cfg = _make_config_mock("garbage")
+    with patch("keyboard_monitor.WordBuffer"), \
+         patch("keyboard_monitor.LayoutMapper"), \
+         patch("keyboard_monitor.LanguageDetector"), \
+         patch("keyboard_monitor.AutoCorrector"), \
+         patch("keyboard_monitor.AppFilter"), \
+         caplog.at_level(logging.WARNING, logger="layout-switcher"):
+        monitor = KeyboardMonitor(cfg)
+
+    assert monitor._hotkey_modifiers == _DEFAULT_HOTKEY_MODIFIERS
+    assert monitor._hotkey_keycode == _DEFAULT_HOTKEY_KEYCODE
+    warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("garbage" in m for m in warning_messages)

@@ -24,6 +24,8 @@ from Quartz import (
     kCGEventTapDisabledByTimeout,
     kCGEventFlagMaskControl,
     kCGEventFlagMaskShift,
+    kCGEventFlagMaskCommand,
+    kCGEventFlagMaskAlternate,
 )
 from AppKit import (
     NSWorkspace,
@@ -47,6 +49,88 @@ ARROW_KEYCODES = frozenset({123, 124, 125, 126})
 RETURN_KEYCODE = 36
 TAB_KEYCODE = 48
 
+# Mask covering all four real modifier keys — used for exact-match comparison
+# in _is_hotkey. Noise bits (NumericPad, NonCoalesced, etc.) are below 0x20000
+# and are excluded by this mask, so the test value 0x60104 (ctrl+shift + noise)
+# correctly matches ctrl+shift.
+_MODIFIER_MASK = (
+    kCGEventFlagMaskControl
+    | kCGEventFlagMaskShift
+    | kCGEventFlagMaskCommand
+    | kCGEventFlagMaskAlternate
+)
+
+# Virtual keycodes for the US keyboard layout (HIToolbox/Events.h).
+# These are physical key positions, not character values.
+_KEY_KEYCODES: dict[str, int] = {
+    "space": 49,
+    "return": 36,
+    "tab": 48,
+    "escape": 53,
+    "a": 0, "s": 1, "d": 2, "f": 3, "g": 5, "h": 4, "j": 38, "k": 40, "l": 37,
+    "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "n": 45, "m": 46,
+    "q": 12, "w": 13, "e": 14, "r": 15, "t": 17, "y": 16, "u": 32, "i": 34,
+    "o": 31, "p": 35,
+    "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23,
+    "6": 22, "7": 26, "8": 28, "9": 25,
+}
+
+_MODIFIER_FLAGS: dict[str, int] = {
+    "ctrl": kCGEventFlagMaskControl,
+    "cmd": kCGEventFlagMaskCommand,
+    "command": kCGEventFlagMaskCommand,
+    "shift": kCGEventFlagMaskShift,
+    "opt": kCGEventFlagMaskAlternate,
+    "option": kCGEventFlagMaskAlternate,
+    "alt": kCGEventFlagMaskAlternate,
+}
+
+_DEFAULT_HOTKEY_SPEC = "ctrl+shift+space"
+_DEFAULT_HOTKEY_MODIFIERS = kCGEventFlagMaskControl | kCGEventFlagMaskShift
+_DEFAULT_HOTKEY_KEYCODE = SPACE_KEYCODE
+
+
+def parse_hotkey(spec: str) -> tuple[int, int] | None:
+    """Parse a hotkey string like 'ctrl+shift+space' into (modifier_flags, keycode).
+
+    Returns None on any malformed input (no exception raised).
+
+    Rules:
+    - Tokens joined by '+'. Whitespace trimmed around each token.
+    - Modifiers (case-insensitive): ctrl, cmd/command, shift, opt/option/alt.
+    - Key: exactly one non-modifier token mapped via _KEY_KEYCODES.
+    - At least one modifier and exactly one key required.
+    - Unknown modifiers, unknown keys, two keys, or duplicate modifiers → None.
+    """
+    if not isinstance(spec, str) or not spec:
+        return None
+
+    tokens = [t.strip().lower() for t in spec.split("+")]
+
+    # Reject empty tokens (caused by leading/trailing/double '+')
+    if any(t == "" for t in tokens):
+        return None
+
+    modifier_flags = 0
+    key_tokens: list[str] = []
+
+    for token in tokens:
+        if token in _MODIFIER_FLAGS:
+            modifier_flags |= _MODIFIER_FLAGS[token]
+        elif token in _KEY_KEYCODES:
+            key_tokens.append(token)
+        else:
+            # Unknown token — not a modifier and not a known key
+            return None
+
+    if not modifier_flags:
+        return None  # No modifier present
+
+    if len(key_tokens) != 1:
+        return None  # Zero or multiple keys
+
+    return (modifier_flags, _KEY_KEYCODES[key_tokens[0]])
+
 
 class KeyboardMonitor:
     """Global keyboard monitor using CGEventTap."""
@@ -62,6 +146,21 @@ class KeyboardMonitor:
         self._detection_queue: queue.Queue = queue.Queue()
         self._last_completed_word: tuple[str, str] | None = None
         self._tap = None
+
+        # Parse hotkey_convert from config once at construction time.
+        # Hotkey changes require a daemon restart — no live observer.
+        hotkey_spec = config.hotkey
+        result = parse_hotkey(hotkey_spec)
+        if result is None:
+            logger.warning(
+                "Invalid hotkey_convert %r — falling back to default '%s'",
+                hotkey_spec,
+                _DEFAULT_HOTKEY_SPEC,
+            )
+            self._hotkey_modifiers = _DEFAULT_HOTKEY_MODIFIERS
+            self._hotkey_keycode = _DEFAULT_HOTKEY_KEYCODE
+        else:
+            self._hotkey_modifiers, self._hotkey_keycode = result
 
     def start(self):
         NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
@@ -282,9 +381,11 @@ class KeyboardMonitor:
         return all(c.isalpha() or c in WordBuffer.LAYOUT_LETTER_KEYS for c in word)
 
     def _is_hotkey(self, flags: int, keycode: int) -> bool:
-        ctrl = flags & kCGEventFlagMaskControl
-        shift = flags & kCGEventFlagMaskShift
-        return bool(ctrl and shift and keycode == SPACE_KEYCODE)
+        # Exact-match on the four real modifier flags (ignores noise bits like
+        # NumericPad or NonCoalesced which sit below 0x20000 and are not in
+        # _MODIFIER_MASK). This preserves upstream's semantics while using
+        # the configured hotkey instead of a hardcoded one.
+        return (flags & _MODIFIER_MASK) == self._hotkey_modifiers and keycode == self._hotkey_keycode
 
     def _is_cursor_move(self, keycode: int) -> bool:
         return keycode in ARROW_KEYCODES
