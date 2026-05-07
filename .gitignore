@@ -7,6 +7,10 @@ build/
 .pytest_cache/
 data/en_wordlist.txt
 .superpowers/
-CLAUDE.md
-.claude/
 docs/superpowers/
+
+# macOS metadata
+.DS_Store
+
+# Claude Code per-session local override (project-wide settings.json IS tracked)
+.claude/settings.local.json
