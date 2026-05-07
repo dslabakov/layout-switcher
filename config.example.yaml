@@ -11,4 +11,5 @@ ignore_words:
   - "gl"
   - "hf"
 log_errors: true
+debug: false
 show_notifications: false

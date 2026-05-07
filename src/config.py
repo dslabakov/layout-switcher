@@ -53,6 +53,10 @@ class Config:
         return self._data.get("log_errors", True)
 
     @property
+    def debug(self) -> bool:
+        return self._data.get("debug", False)
+
+    @property
     def show_notifications(self) -> bool:
         return self._data.get("show_notifications", False)
 

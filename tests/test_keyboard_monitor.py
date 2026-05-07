@@ -1,3 +1,5 @@
+import logging
+import queue as q
 from unittest.mock import MagicMock, patch
 from keyboard_monitor import KeyboardMonitor
 
@@ -118,3 +120,48 @@ def test_post_correction_notification_content():
         mock_notif.setTitle_.assert_called_once_with("Layout Switcher")
         mock_notif.setInformativeText_.assert_called_once_with("ghbdtn → привет")
         mock_center.deliverNotification_.assert_called_once_with(mock_notif)
+
+
+# --- Debug logging for _check_and_correct ---
+
+
+def _make_monitor_for_check():
+    """Build a minimal KeyboardMonitor with mocked deps for _check_and_correct tests."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._config = MagicMock(show_notifications=False)
+    monitor._tracker = None
+    monitor._detection_queue = q.Queue()
+    # Mock word_buffer with stable current_word
+    monitor._word_buffer = MagicMock()
+    monitor._word_buffer.current_word.return_value = ""
+    # Mock layout_mapper
+    monitor._layout_mapper = MagicMock()
+    monitor._layout_mapper.is_cyrillic.return_value = False
+    monitor._layout_mapper.convert_word.return_value = ("ghbdtn", "привет")
+    monitor._layout_mapper.convert.return_value = " "
+    # Mock language detector — will return "correct" to trigger a correction
+    monitor._language_detector = MagicMock()
+    monitor._language_detector.check.return_value = "correct"
+    # Mock auto_corrector
+    monitor._auto_corrector = MagicMock()
+    return monitor
+
+
+def test_check_and_correct_emits_debug_at_debug_level(caplog):
+    """_check_and_correct emits debug entries when log level is DEBUG."""
+    monitor = _make_monitor_for_check()
+    with caplog.at_level(logging.DEBUG, logger="layout-switcher"):
+        monitor._check_and_correct("ghbdtn", " ")
+    debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(debug_records) >= 1
+    messages = " ".join(r.getMessage() for r in debug_records)
+    assert "ghbdtn" in messages
+
+
+def test_check_and_correct_no_debug_at_info_level(caplog):
+    """_check_and_correct emits no debug entries when log level is INFO."""
+    monitor = _make_monitor_for_check()
+    with caplog.at_level(logging.INFO, logger="layout-switcher"):
+        monitor._check_and_correct("ghbdtn", " ")
+    debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(debug_records) == 0

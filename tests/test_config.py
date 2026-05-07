@@ -95,3 +95,28 @@ def test_multiple_observers():
     assert len(a) == 1
     assert len(b) == 1
     os.unlink(path)
+
+
+def test_debug_default_is_false():
+    cfg = Config(path="/nonexistent/path/config.yaml")
+    assert cfg.debug is False
+
+
+def test_debug_key_loads_from_yaml():
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write("debug: true\n")
+        f.flush()
+        cfg = Config(path=f.name)
+    os.unlink(f.name)
+    assert cfg.debug is True
+
+
+def test_debug_false_explicit():
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write("debug: false\n")
+        f.flush()
+        cfg = Config(path=f.name)
+    os.unlink(f.name)
+    assert cfg.debug is False

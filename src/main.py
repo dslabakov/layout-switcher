@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Layout Switcher — auto-detect and correct wrong keyboard layout."""
+import argparse
 import logging
 import sys
 import threading
@@ -24,20 +25,25 @@ class AppDelegate(NSObject):
         logging.getLogger("layout-switcher").info("Layout Switcher stopped.")
 
 
-def setup_logging(config: Config):
+def setup_logging(config: Config, debug: bool = False):
     log_dir = Path.home() / ".config" / "layout-switcher"
     log_dir.mkdir(parents=True, exist_ok=True)
     handlers = [logging.StreamHandler()]
     if config.log_errors:
         handlers.append(logging.FileHandler(log_dir / "layout-switcher.log"))
+    level = logging.DEBUG if (debug or config.debug) else logging.INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=handlers,
     )
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Layout Switcher daemon")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args, _ = parser.parse_known_args()
+
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
@@ -45,7 +51,7 @@ def main():
     app.setDelegate_(delegate)
 
     config = Config()
-    setup_logging(config)
+    setup_logging(config, debug=args.debug)
     logger = logging.getLogger("layout-switcher")
 
     tracker = CorrectionTracker()

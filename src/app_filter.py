@@ -1,6 +1,10 @@
+import logging
+
 from AppKit import NSWorkspace
 
 from config import Config
+
+logger = logging.getLogger("layout-switcher")
 
 
 class AppFilter:
@@ -19,4 +23,7 @@ class AppFilter:
         return app_name.lower() in excluded
 
     def should_process(self) -> bool:
-        return not self.is_excluded(self.get_active_app())
+        app_name = self.get_active_app()
+        result = not self.is_excluded(app_name)
+        logger.debug("app_filter.should_process: app=%r allowed=%s", app_name, result)
+        return result
