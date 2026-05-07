@@ -163,8 +163,8 @@ class KeyboardMonitor:
             self._hotkey_modifiers, self._hotkey_keycode = result
 
     def start(self):
-        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
-            self, "_appDidActivate:", NSWorkspaceDidActivateApplicationNotification, None
+        NSOperationQueue.mainQueue().addOperationWithBlock_(
+            self._register_app_observer
         )
 
         worker = threading.Thread(target=self._detection_worker, daemon=True)
@@ -190,9 +190,19 @@ class KeyboardMonitor:
         logger.info("Layout Switcher started.")
         CFRunLoopRun()
 
+    def _register_app_observer(self):
+        """Register the NSWorkspace observer. Must be called on the main thread."""
+        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self, "_appDidActivate:", NSWorkspaceDidActivateApplicationNotification, None
+        )
+
     def _appDidActivate_(self, notification):
-        self._auto_corrector.invalidate_undo()
-        self._word_buffer.clear()
+        """NSWorkspace observer: app-switch — enqueue clear via worker queue.
+
+        Enqueues a sentinel so the worker thread is the single writer of _word_buffer.
+        Also carries the invalidate_undo side-effect (moved from direct call to queue).
+        """
+        self._detection_queue.put(("clear",))
 
     def _tap_callback(self, proxy, event_type, event, refcon):
         if event_type == kCGEventTapDisabledByTimeout:
@@ -252,19 +262,39 @@ class KeyboardMonitor:
 
         return event
 
+    def _handle_queue_item(self, item: tuple) -> bool:
+        """Dispatch a single queue item. Returns True if drain should follow, False to skip.
+
+        Handles:
+          ("clear",)            — clear word buffer + invalidate undo; no drain.
+          ("hotkey", None)      — run hotkey handler; drain follows.
+          ("check", (word, b))  — run stale check + correction; drain follows.
+        """
+        msg_type = item[0]
+        if msg_type == "clear":
+            self._auto_corrector.invalidate_undo()
+            self._word_buffer.clear()
+            return False
+        if msg_type == "hotkey":
+            self._handle_hotkey()
+            return True
+        if msg_type == "check":
+            word, boundary = item[1]
+            # Skip stale corrections — if queue has newer words, this word
+            # is no longer adjacent to the cursor, backspaces would hit wrong text.
+            if not self._is_stale():
+                self._check_and_correct(word, boundary)
+            else:
+                logger.debug("Skipping stale correction for '%s'", word)
+            return True
+        return True
+
     def _detection_worker(self):
         while True:
-            action, data = self._detection_queue.get()
-            if action == "hotkey":
-                self._handle_hotkey()
-            elif action == "check":
-                word, boundary = data
-                # Skip stale corrections — if queue has newer words, this word
-                # is no longer adjacent to the cursor, backspaces would hit wrong text.
-                if not self._is_stale():
-                    self._check_and_correct(word, boundary)
-                else:
-                    logger.debug("Skipping stale correction for '%s'", word)
+            item = self._detection_queue.get()
+            should_drain = self._handle_queue_item(item)
+            if not should_drain:
+                continue
             # Replay any user keystrokes buffered during correction and
             # feed them back into word_buffer so detection stays in sync.
             replayed = self._auto_corrector.drain_replay_buffer()
