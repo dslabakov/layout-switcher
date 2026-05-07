@@ -314,6 +314,12 @@ class KeyboardMonitor:
                     self._last_completed_word = (rword, rboundary)
                     if len(rword) >= 2 and not self._language_detector.is_ignored(rword) and self._could_be_word(rword):
                         self._check_and_correct(rword, rboundary)
+            # Flip _is_correcting back to False now that drain is complete.
+            # Unconditional — idempotent when flag is already False (no correction
+            # happened). Keeps the flag True for the entire correct+drain cycle,
+            # closing FRAGILITY 4: tap callback routes new keys to _replay_buffer
+            # throughout, preventing interleaved writes to _word_buffer.
+            self._auto_corrector.finalize_correction()
 
     def _check_and_correct(self, word: str, boundary: str):
         extra = self._word_buffer.current_word()
