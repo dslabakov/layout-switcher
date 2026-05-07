@@ -256,7 +256,11 @@ class KeyboardMonitor:
         result = self._word_buffer.add_char(char)
         if result is not None:
             word, boundary = result
-            self._last_completed_word = (word, boundary)
+            # Route _last_completed_word update through worker queue so that
+            # both writes and reads happen on the worker thread (FRAGILITY 3).
+            # Enqueue "complete" unconditionally — before the conditional "check"
+            # so worker always sees freshest value when hotkey fires.
+            self._detection_queue.put(("complete", (word, boundary)))
             if len(word) >= 2 and not self._language_detector.is_ignored(word) and self._could_be_word(word):
                 self._detection_queue.put(("check", (word, boundary)))
 
@@ -266,14 +270,18 @@ class KeyboardMonitor:
         """Dispatch a single queue item. Returns True if drain should follow, False to skip.
 
         Handles:
-          ("clear",)            — clear word buffer + invalidate undo; no drain.
-          ("hotkey", None)      — run hotkey handler; drain follows.
-          ("check", (word, b))  — run stale check + correction; drain follows.
+          ("clear",)              — clear word buffer + invalidate undo; no drain.
+          ("complete", (w, b))    — update _last_completed_word; no drain (state-update only).
+          ("hotkey", None)        — run hotkey handler; drain follows.
+          ("check", (word, b))    — run stale check + correction; drain follows.
         """
         msg_type = item[0]
         if msg_type == "clear":
             self._auto_corrector.invalidate_undo()
             self._word_buffer.clear()
+            return False
+        if msg_type == "complete":
+            self._last_completed_word = item[1]
             return False
         if msg_type == "hotkey":
             self._handle_hotkey()

@@ -432,3 +432,117 @@ def test_handle_queue_item_check_routes_to_check_pipeline():
     assert should_drain is True
     # check_and_correct should have been called — auto_corrector.correct is the signal
     monitor._auto_corrector.correct.assert_called_once()
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-EX: _last_completed_word routed through worker queue (FRAGILITY 3)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_handle_queue_item_complete_updates_last_completed_word():
+    """_handle_queue_item(("complete", ...)) sets _last_completed_word and returns False."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._last_completed_word = None
+
+    should_drain = monitor._handle_queue_item(("complete", ("ghbdtn", "привет")))
+
+    assert monitor._last_completed_word == ("ghbdtn", "привет")
+    assert should_drain is False, "complete message must return False (no drain)"
+
+
+def test_handle_queue_item_complete_overwrites_previous_value():
+    """_handle_queue_item(("complete", ...)) overwrites any previous value."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._last_completed_word = ("old_word", "старое")
+
+    monitor._handle_queue_item(("complete", ("ghbdtn", "привет")))
+
+    assert monitor._last_completed_word == ("ghbdtn", "привет")
+
+
+def _make_monitor_for_tap_callback(word_buffer_result, is_ignored=False):
+    """Build a KeyboardMonitor wired for tap-callback tests.
+
+    word_buffer_result: value returned by _word_buffer.add_char (or None)
+    is_ignored: whether language_detector.is_ignored returns True
+    """
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._detection_queue = MagicMock()
+    monitor._auto_corrector = MagicMock()
+    monitor._auto_corrector.is_correcting = False
+    monitor._word_buffer = MagicMock()
+    monitor._word_buffer.add_char.return_value = word_buffer_result
+    monitor._app_filter = MagicMock()
+    monitor._app_filter.should_process.return_value = True
+    monitor._language_detector = MagicMock()
+    monitor._language_detector.is_ignored.return_value = is_ignored
+    monitor._hotkey_modifiers = _DEFAULT_HOTKEY_MODIFIERS
+    monitor._hotkey_keycode = _DEFAULT_HOTKEY_KEYCODE
+    monitor._tap = None
+    return monitor
+
+
+def _fire_regular_keydown(monitor, char="a", keycode=65):
+    """Fire a simulated regular KeyDown event through _tap_callback.
+
+    Patches CGEventGetIntegerValueField and CGEventGetFlags at the module level
+    (both are top-level imports in keyboard_monitor). Mocks _get_char_from_event
+    as a method since CGEventKeyboardGetUnicodeString is imported locally inside it.
+    """
+    import unittest.mock as um
+    from keyboard_monitor import SYNTHETIC_MARKER_FIELD
+
+    def gif_side_effect(event, field):
+        if field == SYNTHETIC_MARKER_FIELD:
+            return 0  # not synthetic
+        return keycode  # keycode — must not be hotkey/cursor/backspace
+
+    with patch("keyboard_monitor.CGEventGetIntegerValueField", side_effect=gif_side_effect), \
+         patch("keyboard_monitor.CGEventGetFlags", return_value=0), \
+         um.patch.object(monitor, "_get_char_from_event", return_value=char):
+        monitor._tap_callback(None, 10, MagicMock(), None)  # 10 == kCGEventKeyDown
+
+
+def test_tap_callback_enqueues_complete_before_check():
+    """Tap callback enqueues ("complete", ...) before ("check", ...) when word qualifies."""
+    import unittest.mock as um
+    monitor = _make_monitor_for_tap_callback(word_buffer_result=("ghbdtn", " "), is_ignored=False)
+
+    _fire_regular_keydown(monitor)
+
+    calls = monitor._detection_queue.put.call_args_list
+    assert len(calls) == 2, f"Expected 2 put calls, got {len(calls)}: {calls}"
+    assert calls[0] == um.call(("complete", ("ghbdtn", " "))), \
+        f"First call must be ('complete', ...), got {calls[0]}"
+    assert calls[1] == um.call(("check", ("ghbdtn", " "))), \
+        f"Second call must be ('check', ...), got {calls[1]}"
+
+
+def test_tap_callback_enqueues_complete_even_when_word_fails_filter():
+    """Tap callback enqueues ("complete", ...) even when word is too short or ignored."""
+    import unittest.mock as um
+    # Single char word "a" — fails len >= 2 filter; also is_ignored=True for extra coverage
+    monitor = _make_monitor_for_tap_callback(word_buffer_result=("a", " "), is_ignored=True)
+
+    _fire_regular_keydown(monitor)
+
+    calls = monitor._detection_queue.put.call_args_list
+    # Only complete — no check (word too short and ignored)
+    assert len(calls) == 1, f"Expected 1 put call (only complete), got {len(calls)}: {calls}"
+    assert calls[0] == um.call(("complete", ("a", " "))), \
+        f"Must be ('complete', ...), got {calls[0]}"
+
+
+def test_handle_hotkey_reads_last_completed_word_set_by_worker():
+    """_handle_hotkey uses _last_completed_word set on the worker thread."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._last_completed_word = ("ghbdtn", " ")
+    monitor._auto_corrector = MagicMock()
+    monitor._auto_corrector.has_undoable_correction.return_value = False
+    monitor._layout_mapper = MagicMock()
+    monitor._layout_mapper.is_cyrillic.return_value = False
+    monitor._layout_mapper.convert_word.return_value = ("ghbdtn", "привет")
+
+    monitor._handle_hotkey()
+
+    monitor._auto_corrector.manual_convert.assert_called_once_with("ghbdtn", "привет", " ")
