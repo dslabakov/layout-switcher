@@ -346,3 +346,89 @@ def test_keyboard_monitor_init_fallback_on_bad_hotkey(caplog):
     assert monitor._hotkey_keycode == _DEFAULT_HOTKEY_KEYCODE
     warning_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("garbage" in m for m in warning_messages)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-E: observer main-thread dispatch + queue-based buffer clear
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_start_dispatches_observer_registration_to_main_queue():
+    """start() dispatches _register_app_observer to the main NSOperationQueue."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._hotkey_modifiers = _DEFAULT_HOTKEY_MODIFIERS
+    monitor._hotkey_keycode = _DEFAULT_HOTKEY_KEYCODE
+    monitor._detection_queue = q.Queue()
+
+    with patch("keyboard_monitor.NSOperationQueue") as mock_nsopq, \
+         patch("keyboard_monitor.threading"), \
+         patch("keyboard_monitor.CGEventTapCreate"), \
+         patch("keyboard_monitor.CFMachPortCreateRunLoopSource"), \
+         patch("keyboard_monitor.CFRunLoopGetCurrent"), \
+         patch("keyboard_monitor.CFRunLoopAddSource"), \
+         patch("keyboard_monitor.CGEventTapEnable"), \
+         patch("keyboard_monitor.CFRunLoopRun"):
+        mock_mq = MagicMock()
+        mock_nsopq.mainQueue.return_value = mock_mq
+        # Prevent RuntimeError from None tap
+        import keyboard_monitor as km
+        with patch.object(km, "CGEventTapCreate", return_value=MagicMock()):
+            monitor.start()
+
+        mock_nsopq.mainQueue.assert_called()
+        mock_mq.addOperationWithBlock_.assert_called_once_with(monitor._register_app_observer)
+
+
+def test_register_app_observer_calls_add_observer():
+    """_register_app_observer registers self as NSWorkspace notification observer."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    with patch("keyboard_monitor.NSWorkspace") as mock_ws, \
+         patch("keyboard_monitor.NSWorkspaceDidActivateApplicationNotification", new="FakeNotificationName"):
+        mock_nc = MagicMock()
+        mock_ws.sharedWorkspace.return_value.notificationCenter.return_value = mock_nc
+
+        monitor._register_app_observer()
+
+        mock_nc.addObserver_selector_name_object_.assert_called_once_with(
+            monitor,
+            "_appDidActivate:",
+            "FakeNotificationName",
+            None,
+        )
+
+
+def test_app_did_activate_enqueues_clear_sentinel():
+    """_appDidActivate_ enqueues ("clear",) and does NOT write _word_buffer directly."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._detection_queue = MagicMock()
+    monitor._word_buffer = MagicMock()
+
+    monitor._appDidActivate_(MagicMock())
+
+    monitor._detection_queue.put.assert_called_once_with(("clear",))
+    monitor._word_buffer.clear.assert_not_called()
+
+
+def test_handle_queue_item_clear_calls_invalidate_and_clear():
+    """_handle_queue_item(("clear",)) calls invalidate_undo and _word_buffer.clear()."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._word_buffer = MagicMock()
+    monitor._auto_corrector = MagicMock()
+
+    should_drain = monitor._handle_queue_item(("clear",))
+
+    monitor._auto_corrector.invalidate_undo.assert_called_once()
+    monitor._word_buffer.clear.assert_called_once()
+    assert should_drain is False, "_handle_queue_item clear must return False (skip drain)"
+
+
+def test_handle_queue_item_check_routes_to_check_pipeline():
+    """_handle_queue_item(("check", ...)) triggers check-and-correct and returns True."""
+    monitor = _make_monitor_for_check()
+    monitor._last_completed_word = None
+
+    should_drain = monitor._handle_queue_item(("check", ("ghbdtn", " ")))
+
+    assert should_drain is True
+    # check_and_correct should have been called — auto_corrector.correct is the signal
+    monitor._auto_corrector.correct.assert_called_once()
