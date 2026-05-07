@@ -94,7 +94,8 @@ Never `git pull upstream main` directly into local main — always via a sync br
 > Load-bearing decisions. Removing any requires meeting the stated removal condition.
 > See `docs/reference/INVARIANTS.md` for full motivation history.
 
-*(none yet — this section will fill as the project evolves)*
+- **INV-001:** Daemon must run on **native arm64 Python** on Apple Silicon. Intel Homebrew Python (`/usr/local/Cellar/...`) is forbidden — runs under Rosetta and breaks launchd-TCC. When recreating the venv on Apple Silicon, force `arch -arm64` for both `python -m venv` and `pip install` (Claude Code's Bash session is x86_64). See `docs/reference/INVARIANTS.md`.
+- **INV-002:** TCC grants (Accessibility + Input Monitoring) must target the **CLI binary** `/Library/Frameworks/.../bin/python3.X`, NOT `Python.app`. macOS TCC attributes to the responsible process (first non-launchd in exec chain), and the CLI launcher is what gets attributed — the `Python.app` re-exec is the requesting process. See `docs/reference/INVARIANTS.md`.
 
 ## AT SESSION START (mandatory)
 
