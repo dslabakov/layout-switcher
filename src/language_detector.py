@@ -1,8 +1,11 @@
+import logging
 from pathlib import Path
 
 import pymorphy3
 
 from config import Config
+
+logger = logging.getLogger("layout-switcher")
 
 
 class LanguageDetector:
@@ -51,6 +54,9 @@ class LanguageDetector:
             orig_valid = self.is_english(original.lower())
             conv_valid = self.is_russian(converted.lower())
 
-        if not orig_valid and conv_valid:
-            return "correct"
-        return "keep"
+        decision = "correct" if not orig_valid and conv_valid else "keep"
+        logger.debug(
+            "check(%r, %r): orig_valid=%s conv_valid=%s \u2192 %s",
+            original, converted, orig_valid, conv_valid, decision,
+        )
+        return decision

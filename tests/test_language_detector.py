@@ -1,3 +1,4 @@
+import logging
 import pytest
 from language_detector import LanguageDetector
 
@@ -86,3 +87,22 @@ def test_reload_ignore_words():
     det.reload_ignore_words()
     assert det.is_ignored("custom1") is False
     assert det.is_ignored("newword") is True
+
+
+def test_check_emits_debug_log_at_debug_level(detector, caplog):
+    with caplog.at_level(logging.DEBUG, logger="layout-switcher"):
+        result = detector.check("ghbdtn", "привет")
+    assert result == "correct"
+    debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(debug_records) >= 1
+    record_text = debug_records[0].getMessage()
+    assert "ghbdtn" in record_text
+    assert "привет" in record_text
+    assert "correct" in record_text
+
+
+def test_check_no_debug_log_at_info_level(detector, caplog):
+    with caplog.at_level(logging.INFO, logger="layout-switcher"):
+        detector.check("ghbdtn", "привет")
+    debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(debug_records) == 0

@@ -180,11 +180,13 @@ class KeyboardMonitor:
 
     def _check_and_correct(self, word: str, boundary: str):
         extra = self._word_buffer.current_word()
+        logger.debug("_check_and_correct: word=%r boundary=%r", word, boundary)
 
         # Try full word first
         result = self._try_detect(word)
         if result:
             original, corrected = result
+            logger.debug("_check_and_correct: detected correction %r → %r", original, corrected)
             conv_boundary = self._convert_boundary(boundary, word)
             self._auto_corrector.correct(original, corrected, conv_boundary, extra)
             self._notify_correction(original, corrected)
@@ -196,11 +198,17 @@ class KeyboardMonitor:
         # (e.g. "ghbdtn," → "приветб" fails → trim "," → "ghbdtn" → "привет")
         trimmed = word
         trailing = ""
+        trim_attempts = 0
         while trimmed and trimmed[-1] in WordBuffer.LAYOUT_LETTER_KEYS:
             trailing = trimmed[-1] + trailing
             trimmed = trimmed[:-1]
+            trim_attempts += 1
             if len(trimmed) >= 2 and self._could_be_word(trimmed):
                 result = self._try_detect(trimmed)
+                logger.debug(
+                    "_check_and_correct: trim attempt %d: trimmed=%r result=%s",
+                    trim_attempts, trimmed, "hit" if result else "miss",
+                )
                 if result:
                     original, corrected = result
                     # trailing stays as typed (punctuation), boundary gets converted
@@ -211,6 +219,8 @@ class KeyboardMonitor:
                     if self._tracker:
                         self._tracker.record(original, corrected)
                     return
+
+        logger.debug("_check_and_correct: no correction for %r (trim_attempts=%d)", word, trim_attempts)
 
     def _try_detect(self, word: str) -> tuple[str, str] | None:
         """Try to detect if word needs correction. Returns (original, corrected) or None."""
