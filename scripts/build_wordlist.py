@@ -4,19 +4,29 @@ import sys
 from pathlib import Path
 
 
-def build():
+def build(dict_path: Path = Path("/usr/share/dict/words")) -> None:
     output = Path(__file__).parent.parent / "data" / "en_wordlist.txt"
     output.parent.mkdir(parents=True, exist_ok=True)
 
     words = set()
 
     # macOS system dictionary (~236k words)
-    dict_path = Path("/usr/share/dict/words")
     if dict_path.exists():
         for line in dict_path.read_text().splitlines():
             word = line.strip().lower()
             if word and word.isalpha():
                 words.add(word)
+    else:
+        print(
+            f"WARNING: {dict_path} is missing. The English wordlist will be limited "
+            "to ~100 tech terms only — English word detection will be severely degraded.",
+            file=sys.stderr,
+        )
+        print(
+            "Fix: install Xcode Command Line Tools (`xcode-select --install`), then re-run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Common tech terms not in standard dictionaries
     tech_terms = {

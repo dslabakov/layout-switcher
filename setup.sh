@@ -6,6 +6,26 @@ CONFIG_DIR="$HOME/.config/layout-switcher"
 
 echo "=== Layout Switcher Setup ==="
 
+# --- Require native arm64 Python on Apple Silicon (INV-001) ---
+# Intel/Rosetta Python silently breaks TCC permissions for CGEventTap.
+# See docs/reference/INVARIANTS.md INV-001 and ERRORS.md E-0001.
+if [[ "$(uname -m)" == "arm64" ]]; then
+    _python_arch=$(python3 -c 'import platform; print(platform.machine())' 2>&1)
+    if [[ "$_python_arch" != "arm64" ]]; then
+        echo "ERROR: This Mac is Apple Silicon (arm64), but the Python interpreter"
+        echo "  found in PATH reports architecture: $_python_arch"
+        echo "  Running the daemon under Rosetta silently breaks TCC permissions"
+        echo "  (CGEventTap / Input Monitoring) — see ERRORS.md E-0001 and"
+        echo "  docs/reference/INVARIANTS.md INV-001."
+        echo ""
+        echo "Fix: install native arm64 Python from python.org (universal2 installer):"
+        echo "  https://www.python.org/downloads/macos/"
+        echo "Then ensure that python3 in your PATH points to the arm64 build and"
+        echo "re-run setup.sh."
+        exit 1
+    fi
+fi
+
 # Create venv if needed
 if [ ! -d "$SCRIPT_DIR/.venv" ]; then
     echo "Creating virtual environment..."
