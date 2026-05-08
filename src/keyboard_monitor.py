@@ -217,7 +217,7 @@ class KeyboardMonitor:
         try:
             if event_type == kCGEventLeftMouseDown:
                 self._auto_corrector.invalidate_undo(reason="mouse-down")
-                self._word_buffer.clear()
+                self._word_buffer.clear(reason="mouse-down")
                 return event
 
             if event_type != kCGEventKeyDown:
@@ -244,7 +244,7 @@ class KeyboardMonitor:
 
             if self._is_cursor_move(keycode):
                 self._auto_corrector.invalidate_undo(reason="cursor-move")
-                self._word_buffer.clear()
+                self._word_buffer.clear(reason="cursor-move")
                 return event
 
             if not self._app_filter.should_process():
@@ -286,7 +286,7 @@ class KeyboardMonitor:
         msg_type = item[0]
         if msg_type == "clear":
             self._auto_corrector.invalidate_undo(reason="app-switch")
-            self._word_buffer.clear()
+            self._word_buffer.clear(reason="app-switch")
             return False
         if msg_type == "complete":
             self._last_completed_word = item[1]
