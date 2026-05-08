@@ -22,6 +22,7 @@ from Quartz import (
     kCGKeyboardEventKeycode,
     kCFRunLoopCommonModes,
     kCGEventTapDisabledByTimeout,
+    kCGEventTapDisabledByUserInput,
     kCGEventFlagMaskControl,
     kCGEventFlagMaskShift,
     kCGEventFlagMaskCommand,
@@ -205,66 +206,72 @@ class KeyboardMonitor:
         self._detection_queue.put(("clear",))
 
     def _tap_callback(self, proxy, event_type, event, refcon):
-        if event_type == kCGEventTapDisabledByTimeout:
-            logger.warning("Event tap disabled by timeout, re-enabling...")
-            if self._tap:
-                CGEventTapEnable(self._tap, True)
+        if event_type in (kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput):
+            logger.warning(
+                "Event tap disabled (%s), re-enabling...",
+                "timeout" if event_type == kCGEventTapDisabledByTimeout else "user input",
+            )
+            CGEventTapEnable(self._tap, True)
             return event
 
-        if event_type == kCGEventLeftMouseDown:
-            self._auto_corrector.invalidate_undo()
-            self._word_buffer.clear()
-            return event
+        try:
+            if event_type == kCGEventLeftMouseDown:
+                self._auto_corrector.invalidate_undo()
+                self._word_buffer.clear()
+                return event
 
-        if event_type != kCGEventKeyDown:
-            return event
+            if event_type != kCGEventKeyDown:
+                return event
 
-        # Let our own synthetic events (corrections) pass through untouched.
-        # Without this, we block our own backspaces and typed characters.
-        if CGEventGetIntegerValueField(event, SYNTHETIC_MARKER_FIELD) == SYNTHETIC_MARKER_VALUE:
-            return event
+            # Let our own synthetic events (corrections) pass through untouched.
+            # Without this, we block our own backspaces and typed characters.
+            if CGEventGetIntegerValueField(event, SYNTHETIC_MARKER_FIELD) == SYNTHETIC_MARKER_VALUE:
+                return event
 
-        if self._auto_corrector.is_correcting:
+            if self._auto_corrector.is_correcting:
+                char = self._get_char_from_event(event)
+                if char:
+                    self._auto_corrector.add_to_replay_buffer(char)
+                return None
+
+            keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+            flags = CGEventGetFlags(event)
+
+            if self._is_hotkey(flags, keycode):
+                self._detection_queue.put(("hotkey", None))
+                return None
+
+            if self._is_cursor_move(keycode):
+                self._auto_corrector.invalidate_undo()
+                self._word_buffer.clear()
+                return event
+
+            if not self._app_filter.should_process():
+                return event
+
+            if keycode == BACKSPACE_KEYCODE:
+                self._word_buffer.handle_backspace()
+                return event
+
             char = self._get_char_from_event(event)
-            if char:
-                self._auto_corrector.add_to_replay_buffer(char)
-            return None
+            if char is None:
+                return event
 
-        keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-        flags = CGEventGetFlags(event)
+            result = self._word_buffer.add_char(char)
+            if result is not None:
+                word, boundary = result
+                # Route _last_completed_word update through worker queue so that
+                # both writes and reads happen on the worker thread (FRAGILITY 3).
+                # Enqueue "complete" unconditionally — before the conditional "check"
+                # so worker always sees freshest value when hotkey fires.
+                self._detection_queue.put(("complete", (word, boundary)))
+                if len(word) >= 2 and not self._language_detector.is_ignored(word) and self._could_be_word(word):
+                    self._detection_queue.put(("check", (word, boundary)))
 
-        if self._is_hotkey(flags, keycode):
-            self._detection_queue.put(("hotkey", None))
-            return None
-
-        if self._is_cursor_move(keycode):
-            self._auto_corrector.invalidate_undo()
-            self._word_buffer.clear()
             return event
-
-        if not self._app_filter.should_process():
+        except Exception:
+            logger.exception("Unhandled exception in _tap_callback")
             return event
-
-        if keycode == BACKSPACE_KEYCODE:
-            self._word_buffer.handle_backspace()
-            return event
-
-        char = self._get_char_from_event(event)
-        if char is None:
-            return event
-
-        result = self._word_buffer.add_char(char)
-        if result is not None:
-            word, boundary = result
-            # Route _last_completed_word update through worker queue so that
-            # both writes and reads happen on the worker thread (FRAGILITY 3).
-            # Enqueue "complete" unconditionally — before the conditional "check"
-            # so worker always sees freshest value when hotkey fires.
-            self._detection_queue.put(("complete", (word, boundary)))
-            if len(word) >= 2 and not self._language_detector.is_ignored(word) and self._could_be_word(word):
-                self._detection_queue.put(("check", (word, boundary)))
-
-        return event
 
     def _handle_queue_item(self, item: tuple) -> bool:
         """Dispatch a single queue item. Returns True if drain should follow, False to skip.
@@ -300,26 +307,29 @@ class KeyboardMonitor:
     def _detection_worker(self):
         while True:
             item = self._detection_queue.get()
-            should_drain = self._handle_queue_item(item)
-            if not should_drain:
-                continue
-            # Replay any user keystrokes buffered during correction and
-            # feed them back into word_buffer so detection stays in sync.
-            replayed = self._auto_corrector.drain_replay_buffer()
-            for char in replayed:
-                self._auto_corrector._type_string(char)
-                result = self._word_buffer.add_char(char)
-                if result is not None:
-                    rword, rboundary = result
-                    self._last_completed_word = (rword, rboundary)
-                    if len(rword) >= 2 and not self._language_detector.is_ignored(rword) and self._could_be_word(rword):
-                        self._check_and_correct(rword, rboundary)
-            # Flip _is_correcting back to False now that drain is complete.
-            # Unconditional — idempotent when flag is already False (no correction
-            # happened). Keeps the flag True for the entire correct+drain cycle,
-            # closing FRAGILITY 4: tap callback routes new keys to _replay_buffer
-            # throughout, preventing interleaved writes to _word_buffer.
-            self._auto_corrector.finalize_correction()
+            try:
+                should_drain = self._handle_queue_item(item)
+                if not should_drain:
+                    continue
+                # Replay any user keystrokes buffered during correction and
+                # feed them back into word_buffer so detection stays in sync.
+                replayed = self._auto_corrector.drain_replay_buffer()
+                for char in replayed:
+                    self._auto_corrector._type_string(char)
+                    result = self._word_buffer.add_char(char)
+                    if result is not None:
+                        rword, rboundary = result
+                        self._last_completed_word = (rword, rboundary)
+                        if len(rword) >= 2 and not self._language_detector.is_ignored(rword) and self._could_be_word(rword):
+                            self._check_and_correct(rword, rboundary)
+            except Exception:
+                logger.exception("Unhandled exception in _detection_worker")
+            finally:
+                # finalize_correction is idempotent — calling on every iteration
+                # ensures _is_correcting cannot stick True if anything raised mid-cycle.
+                # Also runs on continue (no-drain) path — harmless when _is_correcting
+                # is already False (no-op flip).
+                self._auto_corrector.finalize_correction()
 
     def _check_and_correct(self, word: str, boundary: str):
         extra = self._word_buffer.current_word()
