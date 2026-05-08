@@ -664,12 +664,13 @@ def test_worker_calls_finalize_when_drain_empty():
     assert finalize_called, "finalize_correction must be called even when drain returns []"
 
 
-def test_worker_skips_finalize_when_should_drain_false():
-    """Worker does NOT call finalize_correction() for items that skip drain (e.g. 'clear', 'complete').
+def test_worker_calls_finalize_unconditionally_in_finally():
+    """Worker always calls finalize_correction() in finally — even for no-drain items (e.g. 'clear', 'complete').
 
-    finalize is only appropriate after the drain path. For no-drain items (should_drain=False),
-    _is_correcting was never set True and calling finalize is harmless (idempotent), but the
-    worker should still exercise the 'continue' branch correctly without calling drain or finalize.
+    PR-G changed the contract: finalize now lives in a finally block and is called on EVERY
+    iteration regardless of should_drain. This is intentional — finalize_correction is idempotent
+    (no-op when _is_correcting is False), and unconditional calls ensure _is_correcting cannot
+    stick True if anything raised mid-cycle on the drain path.
     """
     monitor = _make_worker_monitor(drain_result=[])
 
@@ -684,4 +685,85 @@ def test_worker_skips_finalize_when_should_drain_false():
     _run_worker_one_item(monitor, ("clear",))
 
     assert not drain_called, "drain_replay_buffer must NOT be called for no-drain items"
-    assert not finalize_called, "finalize_correction must NOT be called for no-drain items"
+    assert finalize_called, "finalize_correction MUST be called unconditionally in finally block"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-G: exception safety — _tap_callback and _detection_worker hardening
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_tap_callback_swallows_exception_and_returns_event():
+    """_tap_callback swallows exceptions, logs them, and returns the original event.
+
+    If any internal call raises, the callback must not propagate the exception
+    (CFRunLoop is not exception-safe). The original event is returned so the
+    user's keystroke is not lost.
+    """
+    monitor = _make_monitor_for_tap_callback(word_buffer_result=None)
+    # Make auto_corrector.is_correcting raise on access to simulate an internal fault
+    type(monitor._auto_corrector).is_correcting = property(lambda self: (_ for _ in ()).throw(RuntimeError("injected")))
+
+    fake_event = MagicMock()
+
+    with patch("keyboard_monitor.CGEventGetIntegerValueField", return_value=0), \
+         patch("keyboard_monitor.CGEventGetFlags", return_value=0), \
+         patch("keyboard_monitor.logger") as mock_logger:
+        result = monitor._tap_callback(None, 10, fake_event, None)  # 10 == kCGEventKeyDown
+
+    # Must not raise
+    assert result is fake_event, "Original event must be returned on exception"
+    mock_logger.exception.assert_called_once()
+    assert "Unhandled exception in _tap_callback" in mock_logger.exception.call_args[0][0]
+
+
+def test_tap_callback_handles_disabled_by_user_input():
+    """_tap_callback re-enables the tap when kCGEventTapDisabledByUserInput fires.
+
+    Treat the same as kCGEventTapDisabledByTimeout — call CGEventTapEnable(tap, True)
+    and log a warning.
+    """
+    from Quartz import kCGEventTapDisabledByUserInput
+    monitor = _make_monitor_for_tap_callback(word_buffer_result=None)
+    fake_tap = MagicMock()
+    monitor._tap = fake_tap
+    fake_event = MagicMock()
+
+    with patch("keyboard_monitor.CGEventTapEnable") as mock_enable, \
+         patch("keyboard_monitor.logger") as mock_logger:
+        result = monitor._tap_callback(None, kCGEventTapDisabledByUserInput, fake_event, None)
+
+    assert result is fake_event, "Original event must be returned"
+    mock_enable.assert_called_once_with(fake_tap, True)
+    mock_logger.warning.assert_called_once()
+    assert "user input" in mock_logger.warning.call_args[0][0] or \
+           "user input" in str(mock_logger.warning.call_args)
+
+
+def test_worker_calls_finalize_after_exception():
+    """Worker calls finalize_correction() in finally even when an exception is raised mid-cycle.
+
+    This closes the silent-freeze failure mode: if correct() or undo() raises, the finally
+    block resets _is_correcting to False so the tap callback stops routing keys to the
+    replay buffer.
+    """
+    monitor = _make_worker_monitor(drain_result=[])
+
+    finalize_called = []
+    exception_logged = []
+
+    monitor._auto_corrector.finalize_correction = lambda: finalize_called.append(True)
+
+    # Override _handle_queue_item to raise so the exception path in the worker fires
+    def raising_handle(item):
+        raise ValueError("simulated correction failure")
+
+    monitor._handle_queue_item = raising_handle
+
+    with patch("keyboard_monitor.logger") as mock_logger:
+        _run_worker_one_item(monitor, ("check", ("ghbdtn", " ")))
+        # Capture whether exception was logged
+        exception_logged.append(mock_logger.exception.called)
+
+    assert finalize_called, "finalize_correction must be called in finally even after exception"
+    assert exception_logged[0], "logger.exception must be called when worker catches an exception"
