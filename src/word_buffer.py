@@ -8,7 +8,7 @@ class WordBuffer:
 
     # True word boundaries — excludes ALL chars that map to Russian letters.
     # Shift-punctuation that maps to punctuation (? @ # $ ^ &) stays as boundary.
-    BOUNDARIES = frozenset(" \n\r\t!?()/\\|@#$%^&*+-=")
+    BOUNDARIES = frozenset(" \n\r!?()/\\|@#$%^&*+-=")
 
     def __init__(self):
         self._buffer: list[str] = []

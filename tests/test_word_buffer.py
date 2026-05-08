@@ -1,7 +1,7 @@
 from word_buffer import WordBuffer
 
 # True boundaries — excludes all chars that map to Russian letters (both shift levels)
-WORD_BOUNDARIES = {" ", "\n", "\r", "\t", "!", "?", "(", ")"}
+WORD_BOUNDARIES = {" ", "\n", "\r", "!", "?", "(", ")"}
 
 
 def test_add_regular_char():
@@ -205,3 +205,22 @@ def test_at_sign_is_still_boundary():
     buf.add_char("a")
     result = buf.add_char("@")
     assert result == ("a", "@")
+
+
+def test_tab_does_not_complete_word():
+    """Tab is not a word boundary — Cmd+Tab app-switch must not trigger correction.
+
+    Regression guard for the bug where pressing Cmd+Tab after typing a partial word
+    caused the daemon to fire correction in the destination app.
+    """
+    buf = WordBuffer()
+    for c in "ghbd":
+        result = buf.add_char(c)
+        assert result is None
+    # Tab should NOT trigger boundary
+    result = buf.add_char("\t")
+    assert result is None, "Tab must not be a word boundary (would trigger Cmd+Tab false correction)"
+    # Real boundary (space) still works — flushes accumulated buffer (ghbd + tab)
+    result = buf.add_char(" ")
+    assert result is not None
+    assert result[0].startswith("ghbd")
