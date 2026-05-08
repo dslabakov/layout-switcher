@@ -972,3 +972,144 @@ def test_handle_queue_item_clear_sets_flag_false_directly():
     monitor._handle_queue_item(("clear",))
 
     assert monitor._can_correct_next_word is False
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-CMD: Cmd-modifier keystrokes treated as buffer-loss events
+# ────────────────────────────────────────────────────────────────────────────
+
+# Virtual keycodes for V and A (HIToolbox/Events.h)
+KC_V = 9
+KC_A_CMD = 0  # same as KC_A but named for clarity in cmd-modifier tests
+
+
+def _fire_cmd_keydown(monitor, keycode):
+    """Fire a simulated Cmd+key KeyDown event through _tap_callback.
+
+    Like _fire_regular_keydown but patches CGEventGetFlags to return
+    kCGEventFlagMaskCommand so the new Cmd-modifier branch fires.
+    """
+    import unittest.mock as um
+    from keyboard_monitor import SYNTHETIC_MARKER_FIELD
+
+    def gif_side_effect(event, field):
+        if field == SYNTHETIC_MARKER_FIELD:
+            return 0  # not synthetic
+        return keycode
+
+    with patch("keyboard_monitor.CGEventGetIntegerValueField", side_effect=gif_side_effect), \
+         patch("keyboard_monitor.CGEventGetFlags", return_value=kCGEventFlagMaskCommand):
+        result = monitor._tap_callback(None, 10, MagicMock(), None)  # 10 == kCGEventKeyDown
+    return result
+
+
+def test_cmd_v_triggers_buffer_loss():
+    """Cmd+V triggers buffer-loss: invalidate_undo, clear, and flag False."""
+    monitor = _make_monitor_for_tap_callback(word_buffer_result=None)
+
+    fake_event = MagicMock()
+
+    import unittest.mock as um
+    from keyboard_monitor import SYNTHETIC_MARKER_FIELD
+
+    def gif_side_effect(event, field):
+        if field == SYNTHETIC_MARKER_FIELD:
+            return 0
+        return KC_V
+
+    with patch("keyboard_monitor.CGEventGetIntegerValueField", side_effect=gif_side_effect), \
+         patch("keyboard_monitor.CGEventGetFlags", return_value=kCGEventFlagMaskCommand):
+        result = monitor._tap_callback(None, 10, fake_event, None)
+
+    monitor._auto_corrector.invalidate_undo.assert_called_once_with(reason="cmd-shortcut")
+    monitor._word_buffer.clear.assert_called_once_with(reason="cmd-shortcut")
+    assert monitor._can_correct_next_word is False
+    assert result is fake_event, "Event must be returned unmodified"
+
+
+def test_cmd_a_triggers_buffer_loss():
+    """Cmd+A also triggers buffer-loss — flag-only matching, not letter-specific."""
+    monitor = _make_monitor_for_tap_callback(word_buffer_result=None)
+
+    fake_event = MagicMock()
+
+    from keyboard_monitor import SYNTHETIC_MARKER_FIELD
+
+    def gif_side_effect(event, field):
+        if field == SYNTHETIC_MARKER_FIELD:
+            return 0
+        return KC_A_CMD
+
+    with patch("keyboard_monitor.CGEventGetIntegerValueField", side_effect=gif_side_effect), \
+         patch("keyboard_monitor.CGEventGetFlags", return_value=kCGEventFlagMaskCommand):
+        result = monitor._tap_callback(None, 10, fake_event, None)
+
+    monitor._auto_corrector.invalidate_undo.assert_called_once_with(reason="cmd-shortcut")
+    monitor._word_buffer.clear.assert_called_once_with(reason="cmd-shortcut")
+    assert monitor._can_correct_next_word is False
+    assert result is fake_event, "Event must be returned unmodified"
+
+
+def _make_monitor_for_cmd_boundary_tests():
+    """Build a monitor wired for Cmd-modifier buffer-loss + _check_and_correct tests.
+
+    Combines tap-callback wiring from _make_monitor_for_tap_callback with
+    _check_and_correct deps from _make_monitor_for_boundary_flag.
+    """
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._detection_queue = MagicMock()
+    monitor._auto_corrector = MagicMock()
+    monitor._auto_corrector.is_correcting = False
+    monitor._word_buffer = MagicMock()
+    monitor._word_buffer.add_char.return_value = None
+    monitor._word_buffer.current_word.return_value = ""
+    monitor._app_filter = MagicMock()
+    monitor._app_filter.should_process.return_value = True
+    monitor._language_detector = MagicMock()
+    monitor._language_detector.is_ignored.return_value = False
+    monitor._language_detector.check.return_value = "correct"
+    monitor._layout_mapper = MagicMock()
+    monitor._layout_mapper.is_cyrillic.return_value = False
+    monitor._layout_mapper.convert_word.return_value = ("cv", "ме")
+    monitor._layout_mapper.convert.return_value = " "
+    monitor._config = MagicMock(show_notifications=False)
+    monitor._tracker = None
+    monitor._hotkey_modifiers = _DEFAULT_HOTKEY_MODIFIERS
+    monitor._hotkey_keycode = _DEFAULT_HOTKEY_KEYCODE
+    monitor._can_correct_next_word = True
+    monitor._last_completed_word = None
+    monitor._tap = None
+    return monitor
+
+
+def test_after_cmd_v_first_word_skipped():
+    """After Cmd+V, the next _check_and_correct call is skipped and flag re-arms."""
+    monitor = _make_monitor_for_cmd_boundary_tests()
+
+    # Fire Cmd+V to trigger buffer-loss
+    _fire_cmd_keydown(monitor, KC_V)
+
+    assert monitor._can_correct_next_word is False
+
+    # First word after paste — must be skipped
+    monitor._check_and_correct("cv", " ")
+    monitor._auto_corrector.correct.assert_not_called()
+    # Flag re-armed after skip
+    assert monitor._can_correct_next_word is True
+
+
+def test_after_cmd_v_and_boundary_second_word_resumes():
+    """After Cmd+V, skipped first word re-arms the flag; second word fires correction."""
+    monitor = _make_monitor_for_cmd_boundary_tests()
+
+    # Fire Cmd+V to trigger buffer-loss
+    _fire_cmd_keydown(monitor, KC_V)
+
+    # First word — skipped, flag re-armed
+    monitor._check_and_correct("cv", " ")
+    monitor._auto_corrector.correct.assert_not_called()
+    assert monitor._can_correct_next_word is True
+
+    # Second word — correction should fire
+    monitor._check_and_correct("cv", " ")
+    monitor._auto_corrector.correct.assert_called_once()

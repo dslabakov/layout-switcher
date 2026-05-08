@@ -244,6 +244,12 @@ class KeyboardMonitor:
                 self._detection_queue.put(("hotkey", None))
                 return None
 
+            if flags & kCGEventFlagMaskCommand:
+                self._auto_corrector.invalidate_undo(reason="cmd-shortcut")
+                self._word_buffer.clear(reason="cmd-shortcut")
+                self._can_correct_next_word = False
+                return event
+
             if self._is_cursor_move(keycode):
                 self._auto_corrector.invalidate_undo(reason="cursor-move")
                 self._word_buffer.clear(reason="cursor-move")
