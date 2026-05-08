@@ -17,6 +17,7 @@ from correction_tracker import CorrectionTracker
 from keyboard_monitor import KeyboardMonitor
 from onboarding_window import OnboardingWindow, onboarding_done
 from settings_window import get_settings_window
+from permission_watchdog import PermissionWatchdog
 from status_bar import StatusBar
 
 
@@ -88,6 +89,10 @@ def main():
     else:
         status_bar.set_error()
         logger.warning("Permissions missing, monitor not started.")
+
+    # Start permission watchdog (NSTimer on main thread)
+    watchdog = PermissionWatchdog.alloc().initWithStatusBar_interval_(status_bar, 10.0)
+    watchdog.start()
 
     AppHelper.runEventLoop()
 
