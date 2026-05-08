@@ -1,3 +1,4 @@
+import logging
 import time
 import threading
 from dataclasses import dataclass
@@ -11,7 +12,11 @@ from Quartz import (
     kCGEventSourceStateHIDSystemState,
     kCGHIDEventTap,
     kCGEventFlagMaskShift,
+    CGPreflightListenEventAccess,
+    CGPreflightPostEventAccess,
 )
+
+logger = logging.getLogger("layout-switcher")
 
 
 UNDO_TIMEOUT = 10  # seconds
@@ -86,6 +91,12 @@ class AutoCorrector:
         draining the replay buffer. This keeps _is_correcting True for the entire
         correct-then-drain cycle, closing FRAGILITY 4 (replay race).
         """
+        if not (CGPreflightListenEventAccess() and CGPreflightPostEventAccess()):
+            logger.warning(
+                "Skipping correction (%s → %s): TCC permissions revoked",
+                original, corrected,
+            )
+            return
         with self._lock:
             self._is_correcting = True
             delete_count = len(original) + len(boundary) + len(extra)
@@ -109,6 +120,9 @@ class AutoCorrector:
         _is_correcting back to False. Caller must call finalize_correction()
         after drain (closes the same FRAGILITY 4 race on the undo path).
         """
+        if not (CGPreflightListenEventAccess() and CGPreflightPostEventAccess()):
+            logger.warning("Skipping undo: TCC permissions revoked")
+            return
         if not self.has_undoable_correction():
             return
         rec = self._last_correction

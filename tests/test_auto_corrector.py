@@ -1,3 +1,4 @@
+import logging
 import time
 from auto_corrector import AutoCorrector, CorrectionRecord
 
@@ -114,6 +115,9 @@ def test_correct_leaves_is_correcting_true(monkeypatch):
     monkeypatch.setattr(ac, "_type_string", lambda s: None)
     import auto_corrector as acm
     monkeypatch.setattr(acm, "time", type("T", (), {"sleep": staticmethod(lambda s: None), "time": staticmethod(lambda: 1.0)})())
+    # Grant permissions so the preflight guard doesn't short-circuit.
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
 
     ac.correct("ghbdtn", "привет", " ")
 
@@ -129,6 +133,9 @@ def test_undo_leaves_is_correcting_true(monkeypatch):
     monkeypatch.setattr(ac, "_type_string", lambda s: None)
     import auto_corrector as acm
     monkeypatch.setattr(acm, "time", type("T", (), {"sleep": staticmethod(lambda s: None), "time": staticmethod(lambda: 1.0)})())
+    # Grant permissions so the preflight guard doesn't short-circuit.
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
 
     # Seed a correction record so undo() proceeds past the early return.
     ac._last_correction = CorrectionRecord(
@@ -222,6 +229,9 @@ def test_correct_then_finalize_full_cycle(monkeypatch):
     monkeypatch.setattr(ac, "_type_string", lambda s: None)
     import auto_corrector as acm
     monkeypatch.setattr(acm, "time", type("T", (), {"sleep": staticmethod(lambda s: None), "time": staticmethod(lambda: 1.0)})())
+    # Grant permissions so the preflight guard doesn't short-circuit.
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
 
     ac.add_to_replay_buffer("x")  # pre-existing buffer content
 
@@ -234,3 +244,90 @@ def test_correct_then_finalize_full_cycle(monkeypatch):
     assert ac._last_correction.corrected == "привет"
     # Replay buffer was NOT touched by correct() or finalize_correction()
     assert ac.drain_replay_buffer() == ["x"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-H: preemptive TCC preflight guard — CGPreflightListenEventAccess /
+#        CGPreflightPostEventAccess checked at entry of correct() and undo()
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_correct_skipped_when_listen_access_revoked(monkeypatch, caplog):
+    """correct() skips all posting and logs warning when listen access is revoked."""
+    import auto_corrector as acm
+    from unittest.mock import patch
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: False)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
+
+    with patch.object(acm, "CGEventPost") as mock_post, \
+         caplog.at_level(logging.WARNING, logger="layout-switcher"):
+        ac.correct("ghbdtn", "привет", " ")
+
+    assert mock_post.call_count == 0, "CGEventPost must not be called when listen access is revoked"
+    assert ac.is_correcting is False, "_is_correcting must stay False when correction is skipped"
+    assert "TCC permissions revoked" in caplog.text
+
+
+def test_correct_skipped_when_post_access_revoked(monkeypatch, caplog):
+    """correct() skips all posting and logs warning when post access is revoked."""
+    import auto_corrector as acm
+    from unittest.mock import patch
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: False)
+
+    with patch.object(acm, "CGEventPost") as mock_post, \
+         caplog.at_level(logging.WARNING, logger="layout-switcher"):
+        ac.correct("ghbdtn", "привет", " ")
+
+    assert mock_post.call_count == 0, "CGEventPost must not be called when post access is revoked"
+    assert ac.is_correcting is False, "_is_correcting must stay False when correction is skipped"
+    assert "TCC permissions revoked" in caplog.text
+
+
+def test_correct_proceeds_when_both_permissions_granted(monkeypatch, caplog):
+    """correct() posts events and does NOT log a warning when both permissions are granted."""
+    import auto_corrector as acm
+    from unittest.mock import patch
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "time", type("T", (), {"sleep": staticmethod(lambda s: None), "time": staticmethod(lambda: 1.0)})())
+
+    with patch.object(acm, "CGEventPost") as mock_post, \
+         caplog.at_level(logging.WARNING, logger="layout-switcher"):
+        ac.correct("ghbdtn", "привет", " ")
+
+    assert mock_post.call_count > 0, "CGEventPost must be called when both permissions are granted"
+    assert "TCC permissions revoked" not in caplog.text
+
+
+def test_undo_skipped_when_permissions_revoked(monkeypatch, caplog):
+    """undo() skips all posting and logs warning when TCC permissions are revoked."""
+    import auto_corrector as acm
+    from unittest.mock import patch
+
+    ac = AutoCorrector()
+    # Seed a valid correction record so undo() would proceed past has_undoable_correction()
+    ac._last_correction = CorrectionRecord(
+        original="ghbdtn",
+        corrected="привет",
+        boundary=" ",
+        timestamp=time.time(),
+    )
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: False)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
+
+    with patch.object(acm, "CGEventPost") as mock_post, \
+         caplog.at_level(logging.WARNING, logger="layout-switcher"):
+        ac.undo()
+
+    assert mock_post.call_count == 0, "CGEventPost must not be called when permissions are revoked"
+    assert ac.is_correcting is False, "_is_correcting must stay False when undo is skipped"
+    assert "TCC permissions revoked" in caplog.text
+    # last_correction must remain intact since undo was not performed
+    assert ac._last_correction is not None
