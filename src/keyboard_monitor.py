@@ -146,6 +146,7 @@ class KeyboardMonitor:
         self._app_filter = AppFilter(config)
         self._detection_queue: queue.Queue = queue.Queue()
         self._last_completed_word: tuple[str, str] | None = None
+        self._can_correct_next_word: bool = True
         self._tap = None
 
         # Parse hotkey_convert from config once at construction time.
@@ -218,6 +219,7 @@ class KeyboardMonitor:
             if event_type == kCGEventLeftMouseDown:
                 self._auto_corrector.invalidate_undo(reason="mouse-down")
                 self._word_buffer.clear(reason="mouse-down")
+                self._can_correct_next_word = False
                 return event
 
             if event_type != kCGEventKeyDown:
@@ -245,6 +247,7 @@ class KeyboardMonitor:
             if self._is_cursor_move(keycode):
                 self._auto_corrector.invalidate_undo(reason="cursor-move")
                 self._word_buffer.clear(reason="cursor-move")
+                self._can_correct_next_word = False
                 return event
 
             if not self._app_filter.should_process():
@@ -287,6 +290,7 @@ class KeyboardMonitor:
         if msg_type == "clear":
             self._auto_corrector.invalidate_undo(reason="app-switch")
             self._word_buffer.clear(reason="app-switch")
+            self._can_correct_next_word = False
             return False
         if msg_type == "complete":
             self._last_completed_word = item[1]
@@ -333,48 +337,59 @@ class KeyboardMonitor:
                 self._auto_corrector.finalize_correction()
 
     def _check_and_correct(self, word: str, boundary: str):
-        extra = self._word_buffer.current_word()
-        logger.debug("_check_and_correct: word=%r boundary=%r", word, boundary)
-
-        # Try full word first
-        result = self._try_detect(word)
-        if result:
-            original, corrected = result
-            logger.debug("_check_and_correct: detected correction %r → %r", original, corrected)
-            conv_boundary = self._convert_boundary(boundary, word)
-            self._auto_corrector.correct(original, corrected, conv_boundary, extra)
-            self._notify_correction(original, corrected)
-            if self._tracker:
-                self._tracker.record(original, corrected)
-            return
-
-        # Trailing trimming: if full word fails, strip trailing ambiguous chars
-        # (e.g. "ghbdtn," → "приветб" fails → trim "," → "ghbdtn" → "привет")
-        trimmed = word
-        trailing = ""
-        trim_attempts = 0
-        while trimmed and trimmed[-1] in WordBuffer.LAYOUT_LETTER_KEYS:
-            trailing = trimmed[-1] + trailing
-            trimmed = trimmed[:-1]
-            trim_attempts += 1
-            if len(trimmed) >= 2 and self._could_be_word(trimmed):
-                result = self._try_detect(trimmed)
+        try:
+            if not self._can_correct_next_word:
                 logger.debug(
-                    "_check_and_correct: trim attempt %d: trimmed=%r result=%s",
-                    trim_attempts, trimmed, "hit" if result else "miss",
+                    "_check_and_correct: skipping correction (no observed boundary before word=%r)",
+                    word,
                 )
-                if result:
-                    original, corrected = result
-                    # trailing stays as typed (punctuation), boundary gets converted
-                    conv_boundary = self._convert_boundary(boundary, trimmed)
-                    full_boundary = trailing + conv_boundary
-                    self._auto_corrector.correct(original, corrected, full_boundary, extra)
-                    self._notify_correction(original, corrected)
-                    if self._tracker:
-                        self._tracker.record(original, corrected)
-                    return
+                self._last_completed_word = (word, boundary)
+                return
 
-        logger.debug("_check_and_correct: no correction for %r (trim_attempts=%d)", word, trim_attempts)
+            extra = self._word_buffer.current_word()
+            logger.debug("_check_and_correct: word=%r boundary=%r", word, boundary)
+
+            # Try full word first
+            result = self._try_detect(word)
+            if result:
+                original, corrected = result
+                logger.debug("_check_and_correct: detected correction %r → %r", original, corrected)
+                conv_boundary = self._convert_boundary(boundary, word)
+                self._auto_corrector.correct(original, corrected, conv_boundary, extra)
+                self._notify_correction(original, corrected)
+                if self._tracker:
+                    self._tracker.record(original, corrected)
+                return
+
+            # Trailing trimming: if full word fails, strip trailing ambiguous chars
+            # (e.g. "ghbdtn," → "приветб" fails → trim "," → "ghbdtn" → "привет")
+            trimmed = word
+            trailing = ""
+            trim_attempts = 0
+            while trimmed and trimmed[-1] in WordBuffer.LAYOUT_LETTER_KEYS:
+                trailing = trimmed[-1] + trailing
+                trimmed = trimmed[:-1]
+                trim_attempts += 1
+                if len(trimmed) >= 2 and self._could_be_word(trimmed):
+                    result = self._try_detect(trimmed)
+                    logger.debug(
+                        "_check_and_correct: trim attempt %d: trimmed=%r result=%s",
+                        trim_attempts, trimmed, "hit" if result else "miss",
+                    )
+                    if result:
+                        original, corrected = result
+                        # trailing stays as typed (punctuation), boundary gets converted
+                        conv_boundary = self._convert_boundary(boundary, trimmed)
+                        full_boundary = trailing + conv_boundary
+                        self._auto_corrector.correct(original, corrected, full_boundary, extra)
+                        self._notify_correction(original, corrected)
+                        if self._tracker:
+                            self._tracker.record(original, corrected)
+                        return
+
+            logger.debug("_check_and_correct: no correction for %r (trim_attempts=%d)", word, trim_attempts)
+        finally:
+            self._can_correct_next_word = True
 
     def _try_detect(self, word: str) -> tuple[str, str] | None:
         """Try to detect if word needs correction. Returns (original, corrected) or None."""
