@@ -29,6 +29,7 @@ Pick from backlog by appetite:
 
 ## Pending — pick when needed
 
+- [ ] **Spell-correction layer (NSSpellChecker via pyobjc) + Swift-port strategy.** Discussed session 5 (2026-05-08); user paused — «пока ничего не хочу делать». Two-track plan: prototype on Python → use daily to accumulate spec → port to Swift → publish open-source. Full findings + research + roadmap in `docs/research/spell-correction-strategy.md`.
 - [ ] CI setup (GitHub Actions, run pytest on PR). The 205-test safety net is now very strong; INV-003 specifically benefits from CI guarding the boundary-observation flag against accidental removal.
 - [ ] Accessibility API integration for on-screen cursor context. Long-term enhancement that would let the daemon make per-word decisions instead of the binary `_can_correct_next_word` flag — and would be the eventual removal condition for INV-003. Out of scope unless tail-of-word symptoms persist after the adjacent-gap fixes land.
 - [ ] Decide on agent pipeline adoption — small project may not justify; revisit if delegation volume picks up.

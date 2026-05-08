@@ -5,36 +5,39 @@
 
 ## Status
 
-**Session 4 complete (2026-05-08).** Tail-of-word mangle bug class closed via INV-003 (boundary-observation flag). 4 PRs landed: #16 + #17 instrumented hotkey/undo and WordBuffer paths; #18 added the flag with mouse / cursor-move / app-switch coverage; #19 extended with Cmd-modifier branch. 195 → 205 tests. User is monitoring in production for regressions.
+**Session 5 complete (2026-05-08).** Discussion-only — no source changes. Explored adding spell-correction layer (architecturally trivial in current pipeline; recommended `NSSpellChecker` via pyobjc), surveyed open-source niche (closest analog Charm; FOSS Python-daemon gap exists), reconsidered Swift-port for distribution context (correction to 2026-05-07 entry: that decision was personal-use scoped; for community distribution Swift objectively better), adopted two-track strategy (Python prototype → Swift → publish). User explicitly deferred all action: «пока ничего не хочу делать».
+
+Code state unchanged from session 4 end. INV-003 still under production monitoring (205 tests, daemon on commit `79f7f9e`).
 
 ## Read first
 
-1. `CLAUDE.md` — orchestrator-only mode + INV-001/INV-002/**INV-003** (the new one).
-2. `SESSION_RESUME.md` — current state + carry-overs. **Read this before touching `_check_and_correct` or `_tap_callback`** — INV-003's `_can_correct_next_word` flag is load-bearing.
-3. `PLAN.md` → "Next Session — Start Here". Adjacent gaps to INV-003 (backspace-into-empty, Ctrl-shortcuts) are the natural next pickups when user reports them.
-4. `docs/reference/DECISIONS.md` § 2026-05-08 (late) — trust model rationale and rejected alternatives (validator length threshold; Accessibility API).
-5. `ERRORS.md` § E-0004 — bug class this session closed; recognition cues for regressions.
+1. `CLAUDE.md` — orchestrator-only mode + INV-001/002/003.
+2. `SESSION_RESUME.md` — current state + carry-overs (note new spell-correction Track 1 carry-over at top).
+3. `PLAN.md` → "Next Session — Start Here" + "Pending — pick when needed". The new pending entry points to the spell-correction strategy doc.
+4. **NEW: `docs/research/spell-correction-strategy.md`** — full findings (9 sections + how-to-revisit). Read before any spell-correction or Swift-port discussion.
+5. `docs/reference/DECISIONS.md` § 2026-05-08 (session 5) — meta-decision (defer + two-track-when-revisited) + scope-clarification of 2026-05-07 Swift entry.
+6. New memory: `feedback_verify_past_decisions_before_paraphrasing.md` — re-read source before paraphrasing past decisions.
 
-## Delta (since session 3 end)
+## Delta (since session 4 end)
 
-- **INV-003** added: `KeyboardMonitor._can_correct_next_word` flag — gates `_check_and_correct` against firing when the daemon didn't directly observe the preceding boundary. Set False by mouse-down / cursor-move / app-switch / Cmd-modifier; re-armed True via `try/finally` in `_check_and_correct`.
-- Logging instrumentation: `_handle_hotkey` entry + branches, `correct()` / `undo()` happy-paths, `invalidate_undo` with `reason=`, `WordBuffer.clear` with `reason=` and `prev_buffer=`, `add_char` empty→non-empty transition. PRs #16 + #17.
-- 272-pair false-positive table (latin↔russian 2-letter pairs that pass the dictionary check): enumeration archived in `docs/archive/session-resume-history/2026-05.md` session-4 entry.
-- Memory: `feedback_listen_when_user_says_off_track.md` — when user says "у меня всё не так", treat as evidence the hypothesis is hostile to reality, not as a dispute about details.
+- **No source changes.** Daemon, tests, INV-003 implementation all unchanged.
+- **New:** `docs/research/` directory + `spell-correction-strategy.md` (comprehensive 9-section findings).
+- **DECISIONS.md** session-5 entry: meta-decision to defer with two-track contingent strategy; scope-clarifies 2026-05-07 Swift entry as personal-use-bound (not absolute "no Swift").
+- **Memory:** `feedback_verify_past_decisions_before_paraphrasing.md`.
+- **HANDOFF rotation:** previous (session-4-end) HANDOFF archived to `docs/handoffs/2026-05-08-session-4-end.md` (was missing — session 4 close skipped the rotation).
 
-## How to start session 5
+## How to start session 6
 
-1. `git status` clean on main at `79f7f9e` or later. Daemon should be `state = running` (rebooted at session 4 end on new code).
-2. `tail -10 ~/.config/layout-switcher/layout-switcher.log` should show recent typing activity. Look for `_check_and_correct: skipping correction (no observed boundary before word=...)` lines after edit/paste/click events — those confirm INV-003 is firing in production.
-3. If user reports a fresh tail-of-word mangle: cross-reference timestamp with log; check whether the preceding event was covered (mouse-down / cursor-move / app-switch / Cmd-shortcut → INV-003 should have fired, regression). If preceding event was backspace-into-empty or Ctrl-shortcut → that's the known adjacent gap, ship the corresponding extension.
-4. If touching `_check_and_correct` or `_tap_callback` for any reason: re-read INV-003 in `INVARIANTS.md` and the test cases in `tests/test_keyboard_monitor.py` (search for `_can_correct_next_word`). The `try/finally` re-arm is critical — easy to miss on refactor.
+1. `git status` should be clean on `main`. Daemon should still be `state = running` on session-4 code.
+2. If user reports a fresh tail-of-word mangle: same playbook as session-5 boot (see archived `docs/handoffs/2026-05-08-session-4-end.md`). Cross-reference timestamp with log; check whether preceding event was covered by INV-003 or is one of the known adjacent gaps (backspace-into-empty, Ctrl-shortcut).
+3. If user wants to start spell-correction Track 1: read `docs/research/spell-correction-strategy.md` § 8 (strategic plan) + § 3 (NSSpellChecker rec). Spec a Sonnet agent with MVP scope per § «How to revisit».
+4. If user references a past decision — re-read source first per new feedback memory. Do NOT paraphrase 2026-05-07 Swift entry as absolute «no Swift»; it's personal-use-scoped.
 
 ## Known traps
 
-- All session-2 + session-3 traps still apply (INV-001 arm64, INV-002 TCC target, synthetic CGEvent flag clearing for E-0002, Tab-not-in-BOUNDARIES for E-0003, queue-ownership pattern for thread safety, output_path test parameterization).
-- **`_can_correct_next_word` re-arm via `try/finally`** — if a future refactor moves the flag-set-True out of the `finally` block, exception paths in `_check_and_correct` will leave the flag False forever and corrections will silently never fire again. Regression-guarded by tests but easy to miss in code review.
-- **The flag covers 4 reset paths only**: mouse-down, cursor-move, app-switch, Cmd-modifier. Backspace into empty buffer and Ctrl-modifier are KNOWN GAPS (deliberately deferred). Don't claim INV-003 closes those without extending the implementation.
-- **`gh pr create` defaults to upstream when origin is a fork.** Always pass `--repo dslabakov/layout-switcher` explicitly. Session 4 hit this once: PR #18's first attempt landed in moiz2306/layout-switcher#2 and had to be closed and re-opened. Now in DELEGATION.md prompt boilerplate as a reminder.
+- All session-2/3/4 traps still apply: INV-001 arm64 Python; INV-002 TCC target = CLI binary; INV-003 boundary-observation flag (re-armed via try/finally — easy to lose on refactor); `gh pr create` defaults to upstream when origin is fork (always pass `--repo dslabakov/layout-switcher`); E-0002 modifier-flag clearing for synthetic CGEvents; E-0003 Tab-not-in-BOUNDARIES for Cmd+Tab.
+- **`docs/research/`** is a new directory, only contains `spell-correction-strategy.md`. Other exploratory findings should go here too going forward, not into `docs/reference/` (reference is for load-bearing facts, not exploration).
+- **Swift-port discussion:** the 2026-05-07 entry is personal-use-scoped. Don't paraphrase it as «Swift won't work». For community-distribution context, Swift is the recommended path per session-5 entry.
 
 ---
 

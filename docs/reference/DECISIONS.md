@@ -5,6 +5,43 @@
 
 ---
 
+## 2026-05-08 (session 5) — Spell-correction & Swift-port: two-track strategy + scope clarification of 2026-05-07
+
+**Problem.** Discussion-only session. User asked feasibility of on-the-fly spell-correction (separate from layout-switching), broadened to: hypothetical open-source distribution; whether Swift-port should happen first; multilingual support. User questioned whether the 2026-05-07 Swift-rejection had been over-absolutized in subsequent paraphrasing.
+
+**Alternatives considered.**
+
+- (a) **Implement spell-correction now in Python.** Risk: spec unknown without daily-use accumulation; premature feature design likely (per-app exclusion, code-aware exclusions, confidence threshold all need real-world calibration).
+- (b) **Rewrite to Swift now, then add spell.** Same spec-unknown risk; weeks of work invested in moving target. Loses the iteration speed Python gives during exploration phase.
+- (c) **Two-track: Python prototype → daily use → Swift port → open-source publication.** Each track unblocks the next. Spec accumulates on cheap Python; mechanical translation to Swift once stable; publish as native `.app` bundle when distribution polish exists.
+- (d) **Defer entirely until next bug or motivation surfaces.** Honor user's stated lack of motivation; revisit naturally.
+
+**Chose.** (d) for the immediate session — user said «пока ничего не хочу делать». When revisited, **(c) is the strategy.**
+
+**Scope-clarification of 2026-05-07 Swift entry.** That decision was personal-use-context bound: «environmental fix took hours instead of weeks; pymorphy3 essential to current layout-detection logic; NaturalLanguage.framework qualitatively weaker for our specific morphology needs.» **In a community-distribution context, the calculus shifts:** pymorphy3 ceases to be a blocker if NSSpellChecker takes over the validity check (spell-correction core), and Python-daemon's TCC-attribution-on-CLI-binary footgun is itself an adoption barrier most users won't cross. Native Swift `.app` is the right shape for distribution. The 2026-05-07 entry remains valid for current personal-use trajectory, but should NOT be paraphrased as an absolute "no Swift".
+
+**Why (c) when revisited.**
+
+- **Spec is unknown without daily use.** Writing Swift now = architecturally clean code that misbehaves where you didn't predict.
+- **Cost-of-change much lower in Python during exploration.** Reload daemon → test in 5 seconds. Swift has rebuild + relink + relaunch + permissions cycle.
+- **`pymorphy3` retirement matures naturally.** As spell-correction takes over, layout-detection's pymorphy3 dependency becomes more isolated — easier to drop or re-implement on Swift port.
+- **Open-source publication deferred to Swift.** Premature Python-daemon publication = support burden on TCC/arm64 setup issues, distracts from feature iteration.
+
+**Trade-offs / known constraints.**
+
+- Two-track requires sustained motivation across months. If motivation fizzles after Track 1, project ends with «good for me, never published» — acceptable outcome, baseline goal already met.
+- Swift-port estimated several weeks, mostly mechanical translation once Track 1 spec stabilizes. Not «extremely hard» — a one-time investment.
+- `pymorphy3` portability nuance: it's library + OpenCorpora dictionary (compiled DAWG, several MB) + heuristic model. Algorithmically transferable to Swift, but weeks of work + lifetime maintenance burden. For spell-correction via NSSpellChecker, pymorphy3 isn't needed — dilemma only matters if Swift port keeps layout-detection in current form.
+
+**Artifacts.**
+
+- `docs/research/spell-correction-strategy.md` — full findings: architecture fit, competitive research (Charm, Caramba, Espanso, KeySwitcher, LanguageTool, Grammarly), engine recommendation (NSSpellChecker via pyobjc), multilingual notes, feature roadmap (5 groups), pitfalls, Swift-port reconsideration with pymorphy3 nuance, two-track strategy details, comparison metrics, how-to-revisit instruction.
+- `PLAN.md` "Pending — pick when needed" — single-line pointer.
+- 2026-05-07 entry in this file: still valid for personal-use context; not reversed.
+- Memory: `feedback_verify_past_decisions_before_paraphrasing.md` — re-read source before paraphrasing past decisions; don't compress context-bound recommendations into absolute statements.
+
+---
+
 ## 2026-05-08 (late) — Trust model: validate only when boundary directly observed
 
 **Problem.** User reported repeated tail-of-word mangles after edit operations: paste long text + type `cv ` → last 2 chars of pasted text get replaced with `см`; arrow-key to mid-word + backspace + retype tail → tail mangled; click in mid-word + type → garbage. Logs across the session showed the pattern: `_check_and_correct: word='cv' boundary=' '` → `correct: 'cv' -> 'см' (extra='', deleted=3)`. The 3 deleted chars in `correct()` are exactly the 2-letter word + boundary as the daemon believes; but on-screen they hit text the user never intended to delete because the cursor was elsewhere.
