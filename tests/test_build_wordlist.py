@@ -28,24 +28,18 @@ def test_build_wordlist_warns_on_missing_dict(tmp_path, capsys):
 
 def test_build_wordlist_uses_dict_when_present(tmp_path, capsys):
     """build() must incorporate words from the dict file when it exists."""
-    # Write a small synthetic dictionary.
     sample_words = ["hello", "world", "python", "keyboard"]
     dict_file = tmp_path / "words"
     dict_file.write_text("\n".join(sample_words) + "\n")
 
-    # Point output into tmp_path so we don't touch the real data/ dir.
-    # Monkey-patch the output path by temporarily redirecting via subclassing is complex;
-    # instead use a workaround: call build() and let it write to the real data/ dir,
-    # then verify the content.  The real data/ dir is accessed via the symlink during CI.
-    build_wordlist.build(dict_path=dict_file)
+    output_file = tmp_path / "wordlist.txt"  # write to tmp, not shared data/
+
+    build_wordlist.build(dict_path=dict_file, output_path=output_file)
 
     captured = capsys.readouterr()
-    # Should not print any warning — dict was present.
     assert "WARNING" not in captured.err
 
-    # The output file path is relative to the script location, so read it directly.
-    output_path = Path(__file__).parent.parent / "data" / "en_wordlist.txt"
-    assert output_path.exists(), f"Expected wordlist at {output_path}"
-    content = output_path.read_text()
+    assert output_file.exists()
+    content = output_file.read_text()
     for word in sample_words:
         assert word in content, f"Expected '{word}' in wordlist"
