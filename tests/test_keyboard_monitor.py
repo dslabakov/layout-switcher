@@ -150,6 +150,8 @@ def _make_monitor_for_check():
     monitor._config = MagicMock(show_notifications=False)
     monitor._tracker = None
     monitor._detection_queue = q.Queue()
+    monitor._can_correct_next_word = True
+    monitor._last_completed_word = None
     # Mock word_buffer with stable current_word
     monitor._word_buffer = MagicMock()
     monitor._word_buffer.current_word.return_value = ""
@@ -410,16 +412,18 @@ def test_app_did_activate_enqueues_clear_sentinel():
 
 
 def test_handle_queue_item_clear_calls_invalidate_and_clear():
-    """_handle_queue_item(("clear",)) calls invalidate_undo and _word_buffer.clear()."""
+    """_handle_queue_item(("clear",)) calls invalidate_undo, _word_buffer.clear(), and sets flag False."""
     monitor = KeyboardMonitor.__new__(KeyboardMonitor)
     monitor._word_buffer = MagicMock()
     monitor._auto_corrector = MagicMock()
+    monitor._can_correct_next_word = True
 
     should_drain = monitor._handle_queue_item(("clear",))
 
     monitor._auto_corrector.invalidate_undo.assert_called_once()
     monitor._word_buffer.clear.assert_called_once()
     assert should_drain is False, "_handle_queue_item clear must return False (skip drain)"
+    assert monitor._can_correct_next_word is False, "flag must be False after app-switch clear"
 
 
 def test_handle_queue_item_check_routes_to_check_pipeline():
@@ -478,6 +482,7 @@ def _make_monitor_for_tap_callback(word_buffer_result, is_ignored=False):
     monitor._language_detector.is_ignored.return_value = is_ignored
     monitor._hotkey_modifiers = _DEFAULT_HOTKEY_MODIFIERS
     monitor._hotkey_keycode = _DEFAULT_HOTKEY_KEYCODE
+    monitor._can_correct_next_word = True
     monitor._tap = None
     return monitor
 
@@ -568,6 +573,7 @@ def _make_worker_monitor(drain_result=None, correction_triggered=True):
     monitor._word_buffer.add_char.return_value = None  # no completed word from replay
     monitor._language_detector = MagicMock()
     monitor._last_completed_word = None
+    monitor._can_correct_next_word = True
     return monitor
 
 
@@ -838,3 +844,131 @@ def test_worker_replay_chars_trigger_check_on_word_boundary():
     )
     # _check_and_correct should have been triggered for the replayed word
     monitor._check_and_correct.assert_called_once_with("hello", " ")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# _can_correct_next_word flag — boundary-sync guard
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def _make_monitor_for_boundary_flag():
+    """Build a monitor fully wired for _can_correct_next_word / _check_and_correct tests."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._config = MagicMock(show_notifications=False)
+    monitor._tracker = None
+    monitor._detection_queue = q.Queue()
+    monitor._can_correct_next_word = True
+    monitor._last_completed_word = None
+    monitor._word_buffer = MagicMock()
+    monitor._word_buffer.current_word.return_value = ""
+    monitor._layout_mapper = MagicMock()
+    monitor._layout_mapper.is_cyrillic.return_value = False
+    monitor._layout_mapper.convert_word.return_value = ("cv", "ме")
+    monitor._layout_mapper.convert.return_value = " "
+    monitor._language_detector = MagicMock()
+    monitor._language_detector.check.return_value = "correct"
+    monitor._auto_corrector = MagicMock()
+    return monitor
+
+
+def test_can_correct_normal_flow_fires_correction():
+    """Normal flow: flag True → correction is attempted when word qualifies."""
+    monitor = _make_monitor_for_boundary_flag()
+    # flag starts True
+    monitor._check_and_correct("cv", " ")
+    monitor._auto_corrector.correct.assert_called_once()
+    # flag must be re-armed to True after the call
+    assert monitor._can_correct_next_word is True
+
+
+def test_can_correct_after_cursor_move_skips_first_word(caplog):
+    """After cursor-move buffer-loss, first _check_and_correct is skipped and flag re-arms."""
+    monitor = _make_monitor_for_boundary_flag()
+    # Simulate cursor-move external clear
+    monitor._can_correct_next_word = False
+
+    with caplog.at_level(logging.DEBUG, logger="layout-switcher"):
+        monitor._check_and_correct("cv", " ")
+
+    # correction must NOT have been attempted
+    monitor._auto_corrector.correct.assert_not_called()
+    # skip log line must appear
+    skip_logs = [r.getMessage() for r in caplog.records if "skipping correction" in r.getMessage()]
+    assert skip_logs, "Expected skip-correction debug log, found none"
+    assert "cv" in skip_logs[0]
+    # _last_completed_word updated even on skip
+    assert monitor._last_completed_word == ("cv", " ")
+    # flag must be re-armed to True after skip
+    assert monitor._can_correct_next_word is True
+
+
+def test_can_correct_after_cursor_move_second_word_resumes():
+    """After cursor-move, skipped boundary re-arms the flag; second word fires correction."""
+    monitor = _make_monitor_for_boundary_flag()
+    # Simulate cursor-move external clear
+    monitor._can_correct_next_word = False
+
+    # First word — skipped, flag re-armed
+    monitor._check_and_correct("cv", " ")
+    monitor._auto_corrector.correct.assert_not_called()
+    assert monitor._can_correct_next_word is True
+
+    # Second word — correction should fire
+    monitor._check_and_correct("cv", " ")
+    monitor._auto_corrector.correct.assert_called_once()
+
+
+def test_can_correct_after_mouse_down_skips_first_word():
+    """After mouse-down buffer-loss, first _check_and_correct is skipped."""
+    monitor = _make_monitor_for_boundary_flag()
+    # Simulate mouse-down external clear
+    monitor._can_correct_next_word = False
+
+    monitor._check_and_correct("cv", " ")
+
+    monitor._auto_corrector.correct.assert_not_called()
+    assert monitor._can_correct_next_word is True
+
+
+def test_can_correct_after_app_switch_skips_first_word():
+    """After app-switch buffer-loss, first _check_and_correct is skipped."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._word_buffer = MagicMock()
+    monitor._auto_corrector = MagicMock()
+    monitor._can_correct_next_word = True
+
+    # Simulate app-switch via _handle_queue_item
+    monitor._handle_queue_item(("clear",))
+
+    # flag must be False after clear
+    assert monitor._can_correct_next_word is False
+
+    # Now wire up the full check deps and call _check_and_correct
+    monitor._config = MagicMock(show_notifications=False)
+    monitor._tracker = None
+    monitor._detection_queue = q.Queue()
+    monitor._last_completed_word = None
+    monitor._layout_mapper = MagicMock()
+    monitor._layout_mapper.is_cyrillic.return_value = False
+    monitor._layout_mapper.convert_word.return_value = ("cv", "ме")
+    monitor._layout_mapper.convert.return_value = " "
+    monitor._language_detector = MagicMock()
+    monitor._language_detector.check.return_value = "correct"
+    monitor._word_buffer.current_word.return_value = ""
+
+    monitor._check_and_correct("cv", " ")
+
+    monitor._auto_corrector.correct.assert_not_called()
+    assert monitor._can_correct_next_word is True
+
+
+def test_handle_queue_item_clear_sets_flag_false_directly():
+    """_handle_queue_item(("clear",)) sets _can_correct_next_word to False (app-switch path)."""
+    monitor = KeyboardMonitor.__new__(KeyboardMonitor)
+    monitor._word_buffer = MagicMock()
+    monitor._auto_corrector = MagicMock()
+    monitor._can_correct_next_word = True
+
+    monitor._handle_queue_item(("clear",))
+
+    assert monitor._can_correct_next_word is False
