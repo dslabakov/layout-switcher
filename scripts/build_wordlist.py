@@ -4,9 +4,11 @@ import sys
 from pathlib import Path
 
 
-def build(dict_path: Path = Path("/usr/share/dict/words")) -> None:
-    output = Path(__file__).parent.parent / "data" / "en_wordlist.txt"
-    output.parent.mkdir(parents=True, exist_ok=True)
+def build(dict_path: Path = Path("/usr/share/dict/words"),
+          output_path: Path | None = None) -> None:
+    if output_path is None:
+        output_path = Path(__file__).parent.parent / "data" / "en_wordlist.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     words = set()
 
@@ -49,8 +51,8 @@ def build(dict_path: Path = Path("/usr/share/dict/words")) -> None:
     words.update(tech_terms)
 
     sorted_words = sorted(words)
-    output.write_text("\n".join(sorted_words) + "\n")
-    print(f"Written {len(sorted_words)} words to {output}")
+    output_path.write_text("\n".join(sorted_words) + "\n")
+    print(f"Written {len(sorted_words)} words to {output_path}")
 
 
 if __name__ == "__main__":
