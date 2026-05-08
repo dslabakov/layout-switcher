@@ -1,3 +1,8 @@
+import logging
+
+logger = logging.getLogger("layout-switcher")
+
+
 class WordBuffer:
     """Buffers keystrokes and detects word boundaries."""
 
@@ -17,11 +22,18 @@ class WordBuffer:
         """Add a character. Returns (word, boundary_char) if word boundary hit, else None."""
         if char in self.BOUNDARIES:
             word = "".join(self._buffer)
+            logger.debug(
+                "word_buffer: internal reset (path=boundary-emit, prev=%r, trigger_char=%r)",
+                self._buffer, char,
+            )
             self._buffer.clear()
             if word:
                 return (word, char)
             return None
+        was_empty = len(self._buffer) == 0
         self._buffer.append(char)
+        if was_empty:
+            logger.debug("word_buffer.add_char: started new word with char=%r", char)
         return None
 
     def handle_backspace(self):
@@ -31,5 +43,6 @@ class WordBuffer:
     def current_word(self) -> str:
         return "".join(self._buffer)
 
-    def clear(self):
+    def clear(self, reason: str = "unspecified") -> None:
+        logger.debug("word_buffer.clear: reason=%s, prev_buffer=%r", reason, self._buffer)
         self._buffer.clear()
