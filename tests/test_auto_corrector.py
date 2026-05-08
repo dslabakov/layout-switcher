@@ -160,6 +160,56 @@ def test_finalize_correction_idempotent():
     assert ac.is_correcting is False
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# fix/synthetic-event-modifier-bleed: CGEventSetFlags(ev, 0) regression guard
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_send_backspaces_clears_modifier_flags(monkeypatch):
+    """_send_backspaces must call CGEventSetFlags(ev, 0) on every keydown and keyup.
+
+    Regression guard: if CGEventSetFlags calls are removed, synthetic backspaces
+    inherit physically-held modifier keys (e.g. Ctrl+Shift held for hotkey),
+    turning them into Ctrl+Shift+Backspace (delete-by-word) in the target app.
+    """
+    import auto_corrector as acm
+    from unittest.mock import patch, call
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "time", type("T", (), {"sleep": staticmethod(lambda s: None)})())
+
+    with patch.object(acm, "CGEventPost"), \
+         patch.object(acm, "CGEventSetFlags") as mock_set_flags:
+        ac._send_backspaces(2)
+
+    # 2 iterations × 2 events (down + up) = 4 calls total, all with flag mask 0
+    assert mock_set_flags.call_count == 4
+    for c in mock_set_flags.call_args_list:
+        assert c.args[1] == 0, f"Expected flag mask 0, got {c.args[1]}"
+
+
+def test_type_string_clears_modifier_flags(monkeypatch):
+    """_type_string must call CGEventSetFlags(ev, 0) on every keydown and keyup.
+
+    Regression guard: if CGEventSetFlags calls are removed, synthetic keystrokes
+    fired within ms of the hotkey inherit Ctrl+Shift, triggering app shortcuts
+    instead of inserting the intended characters.
+    """
+    import auto_corrector as acm
+    from unittest.mock import patch
+
+    ac = AutoCorrector()
+
+    with patch.object(acm, "CGEventPost"), \
+         patch.object(acm, "CGEventSetFlags") as mock_set_flags:
+        ac._type_string("ab")
+
+    # 2 chars × 2 events (down + up) = 4 calls total, all with flag mask 0
+    assert mock_set_flags.call_count == 4
+    for c in mock_set_flags.call_args_list:
+        assert c.args[1] == 0, f"Expected flag mask 0, got {c.args[1]}"
+
+
 def test_correct_then_finalize_full_cycle(monkeypatch):
     """correct() → finalize_correction() leaves state identical to old correct() contract.
 
