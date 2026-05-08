@@ -5,41 +5,46 @@
 
 ## Status
 
-**Session 2 complete (2026-05-07).** Daemon operational on native arm64 python.org Python 3.14.4 after a three-layer permission saga (`E-0001`). Audit done. Two new invariants in place. Ready for first feature delegation.
+**Session 3 complete (2026-05-08).** 14+1 PRs merged (PR-A through PR-J + 2 hotfixes + a PR-I test-fix follow-up). All 4 audit-flagged threading fragilities closed. 2 pre-existing upstream bugs found via interactive smoke-test (E-0002 modifier-flag bleed, E-0003 Tab-as-boundary on Cmd+Tab). 117 → 195 tests. Daemon comprehensively defended across thread, exception, permission, and install paths.
 
 ## Read first
 
-1. `CLAUDE.md` — project description + orchestrator-only mode + ARCHITECTURAL INVARIANTS now contains INV-001/INV-002.
-2. `SESSION_RESUME.md` — current state + carry-overs.
-3. `PLAN.md` → "Next Session — Start Here" — pick first feature.
-4. `docs/audits/upstream-2026-05-07.md` — code map + bug list + feature candidates. Recommends `show_notifications` wiring.
+1. `CLAUDE.md` — orchestrator-only mode + ARCHITECTURAL INVARIANTS (INV-001/INV-002 unchanged).
+2. `SESSION_RESUME.md` — current state + carry-overs after the campaign.
+3. `PLAN.md` → "Next Session — Start Here" — pick next scope.
+4. `docs/reference/DECISIONS.md` § 2026-05-08 — threading-fragility resolution architecture (queue-based ownership pattern); read this if touching `_handle_queue_item`, `_detection_worker`, or `AutoCorrector.correct/undo/finalize_correction`.
+5. `ERRORS.md` § E-0002, E-0003 — recently-fixed pre-existing bugs; both have regression-guard tests.
 
-## Delta (since session 1 / bootstrap end)
+## Delta (since session 2 end)
 
-- Native arm64 python.org Python 3.14.4 at `/Library/Frameworks/Python.framework/Versions/3.14/`. venv recreated against it with `arch -arm64`.
-- TCC grants for daemon now target **`bin/python3.14`** (CLI binary), NOT `Python.app` — INV-002.
-- `ERRORS.md` E-0001 — full diagnostic trail (Rosetta + stale TCC entries + responsible-process attribution).
-- `docs/reference/INVARIANTS.md` § INV-001, INV-002.
-- `docs/reference/DECISIONS.md` 2026-05-07 entry (stay on Python; no `.app` rebuild / Swift pivot).
-- `.venv-old-x86` backup directory in repo working tree (not committed; rollback insurance for a few days).
-- Memory: `~/.claude/projects/.../memory/feedback_diagnostic_agent_destructive_commands.md` — every diagnostic agent prompt touching macOS system state needs explicit "do not run" block.
+- Diagnostic logging available via `debug: true` in `~/.config/layout-switcher/config.yaml` or `--debug` CLI flag. PR-A.
+- Configurable hotkey now actually wired (`config.hotkey_convert` parsed; PR-C). Parser rejects malformed strings gracefully.
+- Persistent correction stats at `~/.config/layout-switcher/stats.json` — atomic write, JSON `{"count": N, "date": "YYYY-MM-DD"}`. PR-D.
+- Threading fixes via queue-message pattern — `("clear",)`, `("complete",)`, plus `finalize_correction()` deferred-flip. See DECISIONS § 2026-05-08.
+- Permission watchdog: NSTimer on main thread polls `CGPreflight*` every 10s; status-bar icon goes orange on revocation, green on restore. PR-F.
+- Exception safety: `_tap_callback` and `_detection_worker` have try/except; worker calls `finalize_correction()` in `finally` (idempotent). PR-G.
+- Preflight TCC guard at entry of `correct()` and `undo()` — prevents partial-deletion garbage if permissions revoked mid-session. PR-H.
+- `setup.sh` now enforces INV-001 — refuses to proceed if `python3` in PATH is not arm64 on Apple Silicon. PR-I.
+- `build_wordlist.py` exits 1 with loud warning if `/usr/share/dict/words` missing. PR-I.
+- `docs/reference/DELEGATION.md` — centralized delegation-prompt boilerplate (no-destructive block, wordlist trap, smoke-gate criteria, branch naming).
+- Memory: `feedback_step_by_step_smoke_testing.md` — drive interactive smoke-tests step-by-step instead of dumping the full pipeline.
 
-## How to start session 3
+## How to start session 4
 
-1. `git status` — should be clean. Daemon should already be running (`launchctl print gui/$(id -u)/com.layout-switcher` → `state = running`). If not, `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.layout-switcher.plist`.
-2. Sanity probe: `tail -5 ~/.config/layout-switcher/layout-switcher.log` should show "started with full permissions" not "Permissions missing".
-3. Read audit's "Recommended first delegation" section. Default: wire `show_notifications`.
-4. `git checkout -b feature/notifications` (or whichever scope you pick from `PLAN.md` Active backlog).
-5. Delegate to Sonnet in worktree: read `keyboard_monitor.py` post-correction path + how `config.show_notifications` is consumed (currently nothing) + add NSUserNotification call. Tests for the new path.
+1. `git status` — should be clean on `main` at `2f5a179` or later. `launchctl print gui/$(id -u)/com.layout-switcher` → `state = running` (daemon was restarted at session 3 end). If not, bootstrap.
+2. Tail log: `tail -5 ~/.config/layout-switcher/layout-switcher.log` should show "started with full permissions" + the new debug entries (since `debug: true` is now on in user's config).
+3. Read `SESSION_RESUME.md` carry-overs and `PLAN.md` "Next Session — Start Here". Most campaign-driven work is done; remaining items are minor follow-ups + audit candidates that weren't picked up.
+4. If you're about to touch threading code in `keyboard_monitor.py` or `auto_corrector.py` — read `docs/reference/DECISIONS.md` § 2026-05-08 first. The queue-ownership pattern is load-bearing.
 
 ## Known traps
 
-- **NEVER recreate the venv with default `pip install`** — Claude Code's Bash session is x86_64; pip will pull x86_64 wheels for `pyobjc-core` and reintroduce Rosetta. Always: `arch -arm64 .venv/bin/python3 -m pip install ...`. Sanity check: `arch -arm64 .venv/bin/python3 -c 'import platform; print(platform.machine())'` should print `arm64`. INV-001.
-- **NEVER re-sign Python.app or change Python interpreter** without expecting to re-grant TCC. Each fresh codesign / interpreter switch creates a new TCC identity. Old grants accumulate as stale entries; fresh grant required. (`tccutil reset Accessibility|ListenEvent|PostEvent org.python.python` printing "Successfully reset" >1 time per service is the smoking-gun signal.)
-- **NEVER grant Accessibility/Input Monitoring to `Python.app`** — must be the CLI `bin/python3.14`. INV-002. macOS TCC attributes to the responsible process (first non-launchd in chain), and the CLI binary is what gets attributed.
-- macOS permission check happens at startup (`main.py:54-72`), not at runtime — daemon must be killed and restarted (`launchctl bootout` + `bootstrap`, not just `kickstart -k`) for fresh permission re-evaluation, especially after TCC changes.
-- CGEventTap can freeze keyboard input system-wide if buggy — test source changes in foreground first (`python3 -m src.main`), not via launchd.
-- This is a fork — additive changes preferred over rewrites; new modules > restructured ones, to keep upstream merges clean.
+- All session-2 traps (INV-001 arm64, INV-002 TCC target, no `Python.app` grant) still apply.
+- **Synthetic CGEvents must clear modifier flags** (`CGEventSetFlags(ev, 0)`) before `CGEventPost`. Removed in any future refactor → manual hotkey breaks again with delete-by-word + app-shortcut artifacts. Regression-guarded by tests in `test_auto_corrector.py`. ERRORS.md E-0002.
+- **`\t` (Tab) must NOT be in `WordBuffer.BOUNDARIES`** — Cmd+Tab triggers Tab keydown; if Tab is a word boundary, phantom corrections fire in destination apps. Regression-guarded. ERRORS.md E-0003.
+- **`AutoCorrector.correct()` and `undo()` no longer flip `_is_correcting=False` on return** — caller (worker) MUST call `finalize_correction()` after replay drain. Worker does this in `finally`. If a future caller invokes `correct()` outside the worker pattern, it must pair with `finalize_correction()` or the daemon silently freezes (tap routes all keys to replay buffer).
+- **`_tap_callback` exceptions are swallowed and logged** — if behavior gets weird and unit tests are silent, grep the log for `Unhandled exception in _tap_callback`.
+- **Cwd inheritance across chained Bash calls is unreliable after agent worktrees** — explicit `cd /Users/slabakov/dev/Layoutswitcher` at the top of merge-and-sync chains.
+- **Test that touches install/output paths must take an `output_path` parameter** — never let a test write to shared state via worktree symlink. Wordlist clobber incident in PR-I.
 
 ---
 

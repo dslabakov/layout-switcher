@@ -7,37 +7,32 @@
 
 ## Next Session — Start Here
 
-1. **Daemon restart pending:** `show_notifications` shipped (PR #1 merged 2026-05-07, commit `8db1531`). Code is on local `main` but the running daemon still has the old binary loaded — restart via `launchctl bootout gui/$(id -u)/com.layout-switcher && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.layout-switcher.plist` to activate. Toggle the flag in the Settings UI to verify (`ghbdtn ` → notification appears).
-2. **Pick next feature** from "Active backlog" or audit's "Personal-fit candidates" (`docs/audits/upstream-2026-05-07.md`, table § 4). Recommended next: fix `config.hotkey_convert` ignored bug (S, additive) OR diagnostic-mode logging (S, would 10×-up E-0001-class debugging).
+The campaign of session 3 is complete (14+1 PRs, all merged, daemon comprehensively defended). No urgent must-do items. Pick from the backlog by appetite:
+
+1. **Quick cleanup wins (S, < 30 min each):** hoist `CGEventKeyboardSetUnicodeString` import, mock `frontmostApplication` in `test_get_active_app_returns_string`, delete `.venv-old-x86`.
+2. **Quality improvements (S, audit-leftover):** `_is_stale()` count only `("check",)` items; cross-app replay-buffer leak fix in `("clear",)` handler.
+3. **Audit candidates not yet picked up (S/M):** per-app exclusion list UI; "hotkey to toggle enabled" (separate hotkey for pause/resume).
+4. **CI (M):** GitHub Actions running pytest on PR. Prerequisite: `test_get_active_app_returns_string` mocked. The 195-test safety net makes CI now meaningfully valuable.
 
 ## Active backlog (refreshed)
 
-- [ ] **Daemon restart** to activate `show_notifications` (see Next Session step 1). User-side action.
-- [ ] Fix `config.hotkey_convert` ignored bug — UI/config setting is read for display only; actual hotkey is hardcoded at `keyboard_monitor.py:256-259`. Audit § 3 BUG 1.
-- [ ] `setup.sh` audit — currently assumes brew Python; needs to handle python.org arm64 install (or document arm64 Python prerequisite). Otherwise `setup.sh` rerun re-creates the broken state we just escaped from.
-- [ ] Diagnostic-mode logging — log RU/EN classification decisions / when correction was suppressed; would have made `E-0001` debug 10× faster.
-- [ ] Eventually delete `.venv-old-x86` backup (keeping ~ a few days as rollback insurance).
+- [ ] Hoist `CGEventKeyboardSetUnicodeString` out of `_type_string` per-iter loop — PR-J agent flagged.
+- [ ] Replace `test_get_active_app_returns_string` real `NSWorkspace` call with mock — needed for headless CI.
+- [ ] `_is_stale()` count only `("check",)` items, not all queue messages — precision improvement.
+- [ ] Cross-app replay-buffer leak — discard replay buffer in `("clear",)` handler so chars typed in app A during correction don't get retyped into app B after Cmd+Tab.
+- [ ] Eventually delete `.venv-old-x86` backup.
 
 ## Pending — pick when needed
 
-- [ ] CI setup (GitHub Actions, run pytest on PR). Currently no CI.
-- [ ] Decide on agent pipeline adoption — small project may not justify; revisit if delegation volume picks up.
+- [ ] CI setup (GitHub Actions, run pytest on PR). Now meaningfully valuable thanks to 195 tests.
+- [ ] Decide on agent pipeline adoption — small project may not justify; revisit if delegation volume picks up. Single-session campaigns of session 3's scale are the strongest argument so far for some workflow automation.
 - [ ] `docs/reference/ENV.md` if env-vars / paths get non-trivial.
+- [ ] Per-app exclusion list UI in Settings — audit candidate, not done.
+- [ ] "Hotkey to toggle enabled" — second hotkey or triple-press to pause/resume; audit candidate.
 
 ## Architectural findings (cumulative across pilots)
 
-*(none yet — load-bearing learnings have promoted to INV-001/INV-002 in `docs/reference/INVARIANTS.md`. This section will fill if a future cumulative truth doesn't fit a single invariant.)*
-
-## Pending — pick when needed
-
-- [ ] CI setup (GitHub Actions, run pytest on PR). Currently no CI.
-- [ ] Decide on agent pipeline adoption — small project may not justify; revisit if delegation volume picks up.
-- [ ] `docs/reference/ENV.md` if env-vars / paths get non-trivial.
-- [ ] Add a "diagnostic mode" to log decisions (RU/EN classification, when correction was suppressed) for debugging.
-
-## Architectural findings (cumulative across pilots)
-
-*(none yet — this section accumulates load-bearing learnings as project matures)*
+- **Smoke-test catches what unit tests cannot.** Session 3's 2 hotfixes (E-0002 modifier-flag bleed, E-0003 Tab-as-boundary on Cmd+Tab) were both pre-existing upstream bugs that no unit test could have surfaced — they require interactive HID-level event timing with human-held modifier keys. Lesson hardened in `feedback_step_by_step_smoke_testing.md`. For any change touching CGEventTap or synthetic-event injection, schedule interactive smoke-test as a mandatory step, not a nice-to-have.
 
 ---
 

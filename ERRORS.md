@@ -56,6 +56,55 @@
 
 ---
 
+### E-0002 Manual hotkey deletes word + preceding chars and types nothing back
+
+**Symptom.** User types valid Russian word (e.g. `привет `) in a real text field (Notes / NSTextView). Auto-correction does not fire (valid word). User presses configured hotkey `Ctrl+Shift+Space` to manually toggle layout. Expected: `привет ` → `ghbdtn `. Actual: `привет ` is **deleted** (along with several characters of preceding text), and **nothing is typed back**. Auto-correction itself works fine — only the manual hotkey path is broken.
+
+**Root cause (pre-existing upstream — since first commit `26d4f9a`).** `AutoCorrector._send_backspaces()` and `_type_string()` create CGEvents and post them at `kCGHIDEventTap` without explicitly clearing modifier flags. At HID injection, macOS re-derives modifier state from **currently-held physical keys**, NOT from any flags set on the synthetic event itself. The hotkey is `Ctrl+Shift+Space`. The worker thread fires synthetic events within milliseconds of the hotkey keydown — while the user still physically holds Ctrl+Shift (human release latency 50-100ms).
+
+Result: synthetic backspace events become **Ctrl+Shift+Backspace** in NSTextView → delete-by-word semantics, eats more text than intended. Synthetic letter events become **Ctrl+Shift+letter** → triggers app keyboard shortcuts (Cmd-equivalents in Cocoa) instead of inserting characters. Auto-correction (triggered by Space boundary, not hotkey) didn't expose this because by the time `correct()` fires, user has released Space and modifiers are clear.
+
+`CGEventSetFlags` was imported in the very first commit (`auto_corrector.py:8`) but never called — dead import for the entire history of the repo. `kCGEventFlagMaskShift` similarly imported but unused.
+
+**Fix.** Commit `8e82d45` (HOTFIX-1, PR #9). After `_mark_synthetic(ev_down)` and `_mark_synthetic(ev_up)` calls in `_send_backspaces` and `_type_string`, explicitly call `CGEventSetFlags(ev_down, 0)` and `CGEventSetFlags(ev_up, 0)` before `CGEventPost`. Tests use `patch.object(acm, "CGEventSetFlags")` and assert `call_count == expected_event_count` (asserting `CGEventGetFlags(ev) == 0` would be a wrong test — fresh CGEvents default to flags=0, so the assertion would pass even without the SetFlags call).
+
+**Recognize next time.**
+- Synthetic typing produces unexpected app-shortcut behavior (e.g. typing 'g' opens a menu) or word-level deletions instead of single-char deletions.
+- Bug only manifests when user is HOLDING modifier keys at synthetic-event-fire time. Auto-correct (space boundary) works; hotkey-driven path breaks.
+- Test that should catch a regression: assert `CGEventSetFlags` is called once per `ev_down` and once per `ev_up`, with second arg = 0.
+- If `SetFlags(0)` is added but bug persists, fallback is to switch CGEventPost target from `kCGHIDEventTap` to `kCGSessionEventTap` (also imported in the file).
+
+**Date.** 2026-05-08, session 3.
+
+---
+
+### E-0003 Cmd+Tab triggers phantom correction in destination app
+
+**Symptom.** User types a partial word (e.g. `ghbd`) in app A, presses **Cmd+Tab** to switch to app B. In app B, `прив` (or similar Russian-layout-equivalent of the partial word) appears automatically without user typing it. PR-E's app-switch observer DOES fire (in fact this saga confirmed PR-E works) — but the correction fires BEFORE the observer's `("clear",)` message reaches the worker, so observer's clearing is too late.
+
+**Root cause (pre-existing upstream).** `WordBuffer.BOUNDARIES` (`src/word_buffer.py`) included `\t` (Tab character). When user presses Cmd+Tab:
+1. The Tab keydown event reaches `_tap_callback` (Cmd is a modifier; it doesn't suppress Tab key delivery).
+2. `_tap_callback` does NOT filter Tab (it's not in `ARROW_KEYCODES`, not the synthetic marker, not the configured hotkey).
+3. `_word_buffer.add_char('\t')` is called. Tab is in `BOUNDARIES` → returns `("ghbd", "\t")` — word completion triggered.
+4. Tap callback enqueues `("complete", ("ghbd", "\t"))` and `("check", ("ghbd", "\t"))`.
+5. Worker dequeues `("check", ...)`, runs detection: `ghbd` (4 chars) → `прив` in Russian layout, detector confirms `прив` ≈ valid (or trim-and-retry hits something), correction fires.
+6. By the time synthetic backspaces+chars post, focus has switched to app B. `прив` lands in app B.
+
+The PR-E app-switch observer's `("clear",)` enqueue ARRIVES on the queue, but AFTER the `("check",)` that already triggered the correction. Order in queue: `complete` → `check` → (worker processing check, including drain) → `clear`. Too late.
+
+**Fix.** Commit `d6392de` (HOTFIX-2, PR #10). Remove `\t` from `WordBuffer.BOUNDARIES`. Tab is now appended to the buffer as a regular character (gets filtered out by `_could_be_word` later). PR-E's observer `("clear",)` then does its job correctly. Test: `test_tab_does_not_complete_word` in `test_word_buffer.py`.
+
+**Trade-off.** Tab no longer completes a word. In practice Tab is rarely used mid-word — typically for indentation or focus-change — so this trade-off is acceptable. If a user needs Tab as a word-completer for some workflow, the fix would be to ignore Tab in tap callback specifically when modifiers (Cmd) are held, rather than removing from BOUNDARIES universally.
+
+**Recognize next time.**
+- Phantom Russian/English text appearing in destination app immediately after Cmd+Tab.
+- Log shows `_check_and_correct: word='<partial>' boundary='\t'` immediately followed by an `app_filter.should_process: app='<destination_app>'` debug entry.
+- If the bug recurs after another upstream merge: check whether `BOUNDARIES` reverted to include `\t` again.
+
+**Date.** 2026-05-08, session 3.
+
+---
+
 ## Format for new entries
 
 ```markdown
