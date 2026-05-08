@@ -146,6 +146,8 @@ class AutoCorrector:
             ev_up = CGEventCreateKeyboardEvent(self._source, BACKSPACE_KEYCODE, False)
             self._mark_synthetic(ev_down)
             self._mark_synthetic(ev_up)
+            CGEventSetFlags(ev_down, 0)
+            CGEventSetFlags(ev_up, 0)
             CGEventPost(kCGHIDEventTap, ev_down)
             CGEventPost(kCGHIDEventTap, ev_up)
 
@@ -159,5 +161,7 @@ class AutoCorrector:
             CGEventKeyboardSetUnicodeString(ev_up, len(char), char)
             self._mark_synthetic(ev_down)
             self._mark_synthetic(ev_up)
+            CGEventSetFlags(ev_down, 0)
+            CGEventSetFlags(ev_up, 0)
             CGEventPost(kCGHIDEventTap, ev_down)
             CGEventPost(kCGHIDEventTap, ev_up)
