@@ -767,3 +767,74 @@ def test_worker_calls_finalize_after_exception():
 
     assert finalize_called, "finalize_correction must be called in finally even after exception"
     assert exception_logged[0], "logger.exception must be called when worker catches an exception"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-J: Group B — replay-during-correction race
+#
+# _detection_worker drains the replay buffer after each check/hotkey item and
+# re-feeds chars into word_buffer. These tests verify that drain() is called,
+# that _type_string is called per char, and that word_buffer.add_char receives
+# each replayed char (feeding detection back in sync).
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_worker_drains_replay_buffer_after_check():
+    """Worker drains replay buffer after handling a check item.
+
+    Pre-seeded replay buffer ["a", "b"]:
+      - drain_replay_buffer called once
+      - _auto_corrector._type_string called twice (once per char)
+      - _word_buffer.add_char called twice (once per char)
+    """
+    monitor = _make_worker_monitor(drain_result=["a", "b"])
+
+    # Patch _handle_queue_item to return True (drain path) without real correction
+    monitor._handle_queue_item = lambda item: True
+
+    _run_worker_one_item(monitor, ("check", ("ghbdtn", " ")))
+
+    monitor._auto_corrector.drain_replay_buffer.assert_called_once()
+    assert monitor._auto_corrector._type_string.call_count == 2, (
+        f"_type_string must be called once per replayed char, "
+        f"got {monitor._auto_corrector._type_string.call_count}"
+    )
+    assert monitor._word_buffer.add_char.call_count == 2, (
+        f"add_char must be called once per replayed char, "
+        f"got {monitor._word_buffer.add_char.call_count}"
+    )
+    # Verify chars were replayed in order
+    type_calls = [c.args[0] for c in monitor._auto_corrector._type_string.call_args_list]
+    assert type_calls == ["a", "b"], f"Expected ['a','b'], got {type_calls}"
+    add_calls = [c.args[0] for c in monitor._word_buffer.add_char.call_args_list]
+    assert add_calls == ["a", "b"], f"Expected ['a','b'], got {add_calls}"
+
+
+def test_worker_replay_chars_trigger_check_on_word_boundary():
+    """Replay chars that complete a word trigger _check_and_correct if word qualifies.
+
+    Setup: drain returns ["a", "b"]. add_char returns None on first char,
+    returns ("hello", " ") on second (simulates a word boundary during replay).
+    _could_be_word returns True, language_detector.is_ignored returns False.
+    Verify: _check_and_correct is called with the replayed word.
+    """
+    monitor = _make_worker_monitor(drain_result=["a", "b"])
+    monitor._handle_queue_item = lambda item: True
+
+    # Configure add_char to return a word on the second call
+    add_char_results = [None, ("hello", " ")]
+    monitor._word_buffer.add_char.side_effect = add_char_results
+
+    # Wire up the extra deps used inside the replay loop
+    monitor._language_detector.is_ignored.return_value = False
+    monitor._could_be_word = MagicMock(return_value=True)
+    monitor._check_and_correct = MagicMock()
+
+    _run_worker_one_item(monitor, ("check", ("ghbdtn", " ")))
+
+    # _last_completed_word should be updated from the replay result
+    assert monitor._last_completed_word == ("hello", " "), (
+        f"_last_completed_word not updated from replay, got {monitor._last_completed_word}"
+    )
+    # _check_and_correct should have been triggered for the replayed word
+    monitor._check_and_correct.assert_called_once_with("hello", " ")

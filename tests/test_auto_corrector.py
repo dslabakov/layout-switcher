@@ -331,3 +331,165 @@ def test_undo_skipped_when_permissions_revoked(monkeypatch, caplog):
     assert "TCC permissions revoked" in caplog.text
     # last_correction must remain intact since undo was not performed
     assert ac._last_correction is not None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# PR-J: Group A — AutoCorrector.correct() / undo() CGEvent posting sequence
+#
+# The earlier tests cover state-machine (is_correcting flag), preflight guards,
+# modifier-flag clearing, and finalize contract. These tests add:
+#   A1: correct() posts backspaces BEFORE chars, with correct total count
+#   A2: undo() posts backspaces BEFORE chars, with correct total count
+#   A3: every event from correct() gets both synthetic-marker AND flag-zero calls
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_correct_posts_backspaces_then_chars_in_order(monkeypatch):
+    """correct() posts N backspace events then M char events — ordering and count verified.
+
+    correct("ghbdtn", "привет", " "):
+      delete_count = len("ghbdtn") + len(" ") + len("") = 7
+      → 7 × 2 events (down+up) = 14 backspace posts
+      → types "привет" (6 chars) + " " (1 char) = 7 chars × 2 events = 14 typed posts
+      Total: 28 CGEventPost calls
+
+    Ordering contract: backspace keycode = 51; typed events use keycode 0 + unicode.
+    We verify the first 14 posts carry keycode 51 events and the next 14 carry keycode 0.
+    """
+    import auto_corrector as acm
+    from unittest.mock import patch, call
+    from Quartz import kCGKeyboardEventKeycode, kCGHIDEventTap
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "time", type("T", (), {
+        "sleep": staticmethod(lambda s: None),
+        "time": staticmethod(lambda: 1.0),
+    })())
+
+    posted_keycodes = []
+
+    def capture_post(tap, event):
+        from Quartz import CGEventGetIntegerValueField
+        kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+        posted_keycodes.append(kc)
+
+    with patch.object(acm, "CGEventPost", side_effect=capture_post):
+        ac.correct("ghbdtn", "привет", " ")
+
+    # 7 backspaces × 2 (down+up) + 7 chars × 2 = 28 total
+    assert len(posted_keycodes) == 28, (
+        f"Expected 28 CGEventPost calls, got {len(posted_keycodes)}"
+    )
+    # First 14: backspace keycode 51
+    backspace_keycodes = posted_keycodes[:14]
+    assert all(kc == 51 for kc in backspace_keycodes), (
+        f"First 14 posts must be backspace (kc=51), got keycodes: {backspace_keycodes}"
+    )
+    # Next 14: typed unicode events use keycode 0
+    typed_keycodes = posted_keycodes[14:]
+    assert all(kc == 0 for kc in typed_keycodes), (
+        f"Next 14 posts must be typed chars (kc=0), got keycodes: {typed_keycodes}"
+    )
+
+
+def test_undo_posts_backspaces_then_original_in_order(monkeypatch):
+    """undo() posts N backspace events then M char events — ordering and count verified.
+
+    With corrected="привет", boundary=" ":
+      delete_count = len("привет") + len(" ") = 7
+      → 7 × 2 = 14 backspace posts
+      → types "ghbdtn" (6) + " " (1) = 7 chars × 2 = 14 typed posts
+      Total: 28 CGEventPost calls
+    """
+    import auto_corrector as acm
+    from unittest.mock import patch
+    from Quartz import kCGKeyboardEventKeycode
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "time", type("T", (), {
+        "sleep": staticmethod(lambda s: None),
+        "time": staticmethod(lambda: 1.0),
+    })())
+
+    # Seed a correction record so undo() proceeds past has_undoable_correction()
+    ac._last_correction = CorrectionRecord(
+        original="ghbdtn",
+        corrected="привет",
+        boundary=" ",
+        timestamp=time.time(),
+    )
+
+    posted_keycodes = []
+
+    def capture_post(tap, event):
+        from Quartz import CGEventGetIntegerValueField
+        kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+        posted_keycodes.append(kc)
+
+    with patch.object(acm, "CGEventPost", side_effect=capture_post):
+        ac.undo()
+
+    assert len(posted_keycodes) == 28, (
+        f"Expected 28 CGEventPost calls, got {len(posted_keycodes)}"
+    )
+    backspace_keycodes = posted_keycodes[:14]
+    assert all(kc == 51 for kc in backspace_keycodes), (
+        f"First 14 posts must be backspace (kc=51), got keycodes: {backspace_keycodes}"
+    )
+    typed_keycodes = posted_keycodes[14:]
+    assert all(kc == 0 for kc in typed_keycodes), (
+        f"Next 14 posts must be typed chars (kc=0), got keycodes: {typed_keycodes}"
+    )
+
+
+def test_correct_marks_synthetic_and_zeros_flags_on_every_event(monkeypatch):
+    """Every event from correct() gets both synthetic-marker AND flag-zero calls.
+
+    correct("ghbdtn", "привет", " ") produces 28 events total.
+    Each must receive:
+      - CGEventSetIntegerValueField(ev, 42, 0x4C53) → synthetic marker
+      - CGEventSetFlags(ev, 0) → flag clear
+
+    Note: CGEventSetFlags is module-level in auto_corrector.
+    CGEventSetIntegerValueField is also module-level (used via _mark_synthetic).
+    Expect 28 calls each.
+    """
+    import auto_corrector as acm
+    from unittest.mock import patch
+
+    ac = AutoCorrector()
+    monkeypatch.setattr(acm, "CGPreflightListenEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "CGPreflightPostEventAccess", lambda: True)
+    monkeypatch.setattr(acm, "time", type("T", (), {
+        "sleep": staticmethod(lambda s: None),
+        "time": staticmethod(lambda: 1.0),
+    })())
+
+    with patch.object(acm, "CGEventPost"), \
+         patch.object(acm, "CGEventSetIntegerValueField") as mock_mark, \
+         patch.object(acm, "CGEventSetFlags") as mock_flags:
+        ac.correct("ghbdtn", "привет", " ")
+
+    # 28 events total (14 BS + 14 typed)
+    assert mock_mark.call_count == 28, (
+        f"CGEventSetIntegerValueField must be called 28 times, got {mock_mark.call_count}"
+    )
+    assert mock_flags.call_count == 28, (
+        f"CGEventSetFlags must be called 28 times, got {mock_flags.call_count}"
+    )
+    # All marker calls must use the SYNTHETIC_MARKER_FIELD and SYNTHETIC_MARKER_VALUE
+    from auto_corrector import SYNTHETIC_MARKER_FIELD, SYNTHETIC_MARKER_VALUE
+    for c in mock_mark.call_args_list:
+        assert c.args[1] == SYNTHETIC_MARKER_FIELD, (
+            f"Expected field {SYNTHETIC_MARKER_FIELD}, got {c.args[1]}"
+        )
+        assert c.args[2] == SYNTHETIC_MARKER_VALUE, (
+            f"Expected value {SYNTHETIC_MARKER_VALUE:#x}, got {c.args[2]:#x}"
+        )
+    # All flag calls must zero out flags
+    for c in mock_flags.call_args_list:
+        assert c.args[1] == 0, f"Expected flag mask 0, got {c.args[1]}"
