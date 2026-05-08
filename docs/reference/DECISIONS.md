@@ -5,6 +5,46 @@
 
 ---
 
+## 2026-05-08 (late) — Trust model: validate only when boundary directly observed
+
+**Problem.** User reported repeated tail-of-word mangles after edit operations: paste long text + type `cv ` → last 2 chars of pasted text get replaced with `см`; arrow-key to mid-word + backspace + retype tail → tail mangled; click in mid-word + type → garbage. Logs across the session showed the pattern: `_check_and_correct: word='cv' boundary=' '` → `correct: 'cv' -> 'см' (extra='', deleted=3)`. The 3 deleted chars in `correct()` are exactly the 2-letter word + boundary as the daemon believes; but on-screen they hit text the user never intended to delete because the cursor was elsewhere.
+
+Root cause split: (1) validator false-positive on 2-3 letter pairs — 272 enumerated false-positive pairs (157 Latin→Russian + 115 Russian→Latin) where the layout conversion is "valid enough" for either pymorphy3 or the english wordlist; (2) WordBuffer is a keystroke counter with no view of on-screen cursor — external resets (mouse, cursor-move, app-switch, paste/Cmd-V) silently desync buffer from cursor.
+
+**Alternatives considered.**
+
+- (a) **Raise minimum word length to 3 or 4.** Closes the 272 enumerated 2-letter false-positives at the cost of disabling all 2-3 letter correction. User pushed back: doesn't fix the *fundamental* desync — the same class of bug recurs whenever editing 4+ letter words and replacing the last N chars produces a false-positive fragment. Rejected.
+
+- (b) **Accessibility API integration.** Query the on-screen text field for chars immediately left of cursor. Ideal accuracy: the daemon can decide per-word whether to suppress. But: doesn't work in iTerm2 / Terminal / VS Code / Electron / web inputs; asynchronous (5-30ms per query, latency-killing on hot path); requires a separate AX permission that's already in our trust budget but adds runtime overhead. Out of scope for first fix; reserved as future enhancement (and the eventual removal condition for INV-003).
+
+- (c) **Boundary-observation flag (chose this).** Add `_can_correct_next_word: bool` in `KeyboardMonitor`. Set False on every external buffer-loss event (mouse-down, cursor-move keystroke, app-switch via observer, Cmd-modifier keystroke). At `_check_and_correct` entry, if False, log + skip + re-arm via `try/finally`. ~10 lines of behavior change + 10 new tests. Trade-off: first word after any reset event is never corrected (user explicitly accepted this).
+
+**Chose.** (c). User-articulated rule: *"Если перед словом не было пробела — программа не должна пытаться угадывать"* — translates one-to-one to "skip correction unless the daemon directly observed the preceding boundary".
+
+**Why.**
+
+- Single behavioral change, ~10 lines of source diff, comprehensive test coverage (10 new tests across 2 PRs).
+- Closes the entire observed bug class: cursor-move-mid-word, mouse-click-mid-word, Cmd+V paste followed by typing, app-switch followed by typing.
+- Raising the length threshold (option a) was the user's first instinct after the false-positive list was shown, but the user themselves rejected it on the grounds that desync is the deeper issue. This is the lesson: don't optimize the validator if the trust model is the actual gap.
+- Cost (first word after reset never corrected) matches the user's mental model: after editing or pasting, you're working with on-screen text the daemon didn't see — don't trust correction until a clean boundary establishes new sync.
+
+**Trade-offs / known gaps.**
+
+- **Backspace into empty buffer**: not yet covered. If user backspaces over text the daemon didn't write, the buffer was already empty so no `clear()` fires, flag stays True. Next word can mangle. Separate follow-up.
+- **Ctrl-modifier shortcuts** beyond the configured hotkey (e.g., Ctrl+A in terminal): not covered. Less impactful in practice but a known gap.
+- **Option-modifier**: deliberately not covered — Option commonly produces letter input (`Option+E + a → á`).
+
+**Artifacts.**
+
+- Source: PR #18 (commit `1aef293`, `fix/skip-correction-after-buffer-loss`) — adds flag, sets False at 3 sites (mouse-down, cursor-move, app-switch), checks at `_check_and_correct` entry, re-arms via `try/finally`. PR #19 (commit `79f7f9e`, `fix/cmd-modifier-buffer-loss`) — adds Cmd-modifier branch in `_tap_callback`.
+- Tests: 195 → 205 (+10 across both PRs). Covers normal flow, each reset path, re-arm-after-skip.
+- Diagnostic infrastructure: PR #16 (commit `a0d6b76`) instrumented hotkey/undo path; PR #17 (commit `b9de6b9`) instrumented `WordBuffer.clear/add_char` with `prev_buffer` and `reason=` parameters. Without these the diagnostic was untraceable.
+- `INVARIANTS.md` § INV-003.
+- `ERRORS.md` § E-0004.
+- 272-pair false-positive enumeration: archived in `docs/archive/session-resume-history/2026-05.md` session-4 entry.
+
+---
+
 ## 2026-05-08 — Threading-fragility resolution via queue-based ownership (no locks)
 
 **Problem.** Audit § 3 flagged 4 threading fragilities in the daemon:

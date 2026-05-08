@@ -96,6 +96,7 @@ Never `git pull upstream main` directly into local main — always via a sync br
 
 - **INV-001:** Daemon must run on **native arm64 Python** on Apple Silicon. Intel Homebrew Python (`/usr/local/Cellar/...`) is forbidden — runs under Rosetta and breaks launchd-TCC. When recreating the venv on Apple Silicon, force `arch -arm64` for both `python -m venv` and `pip install` (Claude Code's Bash session is x86_64). See `docs/reference/INVARIANTS.md`.
 - **INV-002:** TCC grants (Accessibility + Input Monitoring) must target the **CLI binary** `/Library/Frameworks/.../bin/python3.X`, NOT `Python.app`. macOS TCC attributes to the responsible process (first non-launchd in exec chain), and the CLI launcher is what gets attributed — the `Python.app` re-exec is the requesting process. See `docs/reference/INVARIANTS.md`.
+- **INV-003:** Auto-correction must NOT fire when the daemon didn't directly observe the boundary that precedes the word. `KeyboardMonitor._can_correct_next_word` is the gate: False after any external buffer-loss event (mouse-down, cursor-move keystroke, app-switch via NSWorkspace observer, Cmd-modifier keystroke), True after `_check_and_correct` re-arms via `try/finally`. Without this guard, 2-3-letter words pass the dictionary check (272 enumerated false-positive pairs) at any cursor position — backspaces eat real on-screen text and tail-of-word mangles result. See `docs/reference/INVARIANTS.md`.
 
 ## AT SESSION START (mandatory)
 

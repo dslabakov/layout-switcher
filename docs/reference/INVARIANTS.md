@@ -38,6 +38,31 @@ Otherwise pip will pull x86_64 wheels for `pyobjc-core` etc., even though the Py
 
 ---
 
+### INV-003: Auto-correction must skip the first word after any external buffer-loss event
+
+**Constraint.** `KeyboardMonitor._can_correct_next_word: bool` (initial value `True`) must be set to `False` whenever the daemon's `_word_buffer` is reset by an external event:
+
+- `_tap_callback` on `kCGEventLeftMouseDown` (mouse click)
+- `_tap_callback` on `_is_cursor_move(keycode)` (arrow keys, Home/End, PgUp/PgDn)
+- `_tap_callback` when `flags & kCGEventFlagMaskCommand` is set (Cmd+V paste, Cmd+X cut, Cmd+A select-all, Cmd+Z undo, Cmd+Tab, Cmd+arrow, etc.)
+- `_handle_queue_item("clear")` (NSWorkspace app-switch observer)
+
+The `_check_and_correct` method must, at entry, check the flag — if `False`, log a `skipping correction (no observed boundary before word=...)` line, update `_last_completed_word` (so the manual hotkey path remains armed), and return early WITHOUT calling correction logic. The flag must be re-armed to `True` in a `try/finally` block surrounding the body, so subsequent words behave normally regardless of which path returned.
+
+**Motivation.** Two independent gaps combine into a tail-of-word mangle bug:
+1. Validator false-positives at length 2-3: 157 Latin → Russian + 115 Russian → Latin pairs where the layout-converted form is "valid" enough by either pymorphy3 (RU) or the english wordlist (EN) to trigger correction. Examples observed in user logs: `cv → см`, `ог → ju`, `gh → пр`, `dc → вс`, `ut → ге`. Full enumeration in session-4 archive.
+2. WordBuffer-cursor desync: `_word_buffer` is a counter without on-screen visibility. External events that reset the buffer (mouse, cursor-move, app-switch, paste/Cmd-shortcut) leave the on-screen cursor in a position the daemon doesn't track. The next chars typed start a "fresh word" in the buffer, but on-screen they may be inserted inside an existing word. When the validator green-lights a 2-3 letter false-positive, `correct()` issues backspaces that eat real chars from a longer on-screen word, then types the false-positive replacement.
+
+The flag closes (2). Without it, every cursor-move/click/paste followed by typing a 2-3 letter false-positive pair mangles surrounding on-screen text. CGEventTap cannot read text-field contents, so we cannot verify boundary on the on-screen side; the only reliable signal is "did I myself observe the boundary that completed the previous word?".
+
+**Trade-off.** First word after any reset event is never auto-corrected even if the user genuinely typed it from scratch (e.g., user clicks at end of empty document and types `ghbdtn ` — no correction). This is intentional and was explicitly accepted by the user as the cost of correctness.
+
+**Introduced.** 2026-05-08, session 4. PR #18 (commit `1aef293`, `fix/skip-correction-after-buffer-loss`) added the flag with mouse / cursor-move / app-switch coverage. PR #19 (commit `79f7f9e`, `fix/cmd-modifier-buffer-loss`) extended with the Cmd-modifier branch. See `docs/reference/DECISIONS.md` 2026-05-08 (late) entry "Trust model: validate only when boundary directly observed" and `ERRORS.md` E-0004.
+
+**Removal requires.** A reliable on-screen-cursor context source (e.g., Accessibility API integration that works in terminals, Electron, web inputs, etc.) — at which point the daemon can verify "is there a non-space char immediately before the start of my buffer?" and decide on a per-word basis whether to suppress. Until then, the binary flag is the only reliable signal.
+
+---
+
 ## Format for new invariants
 
 When adding a new INV-NNN:

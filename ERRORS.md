@@ -105,6 +105,33 @@ The PR-E app-switch observer's `("clear",)` enqueue ARRIVES on the queue, but AF
 
 ---
 
+### E-0004 Tail-of-word mangle after edit/paste/click — short false-positive corrections fired on desynced buffer
+
+**Symptom.** User pastes a long text and immediately types `cv ` (or `gh `, `dc `, etc.) → on screen, the last 2 characters of the pasted text are silently replaced with `см` (or layout-equivalent). Same effect via: arrow keys to mid-word + backspace + retype tail; click mid-word + type. User describes it as "two letters at the tail of a long word changed to nonsense, but I never typed those letters there" — and confirms not touching mouse or trackpad in some reproductions.
+
+**Root cause.** Two independent gaps combine — neither is sufficient alone:
+
+1. **Validator false-positives at length 2-3.** Layout-mapping produces 272 short pairs that pass either dictionary on conversion: 157 Latin→Russian (`cv→см`, `gh→пр`, `dc→вс`, `ог→ju` reverse, full table archived in session-4 retrospective) + 115 Russian→Latin. pymorphy3 is permissive on 2-letter morphological fragments; English wordlist accepts many 2-letter tokens. Any 2-3-letter word that hits one of these pairs and reaches `_check_and_correct` will be "corrected".
+
+2. **WordBuffer-cursor desync via external buffer-loss.** `_word_buffer` is a keystroke counter; it has no on-screen cursor visibility. macOS doesn't deliver paste content as keystrokes (NSPasteboard insert), so paste invisible to event tap. Cursor-move keystrokes (arrows, Home/End), mouse clicks, app-switches, and Cmd-modifier shortcuts (including Cmd+V paste) all signal a desync — the daemon clears its buffer because it knows it's lost sync. After clear, the next chars accumulate as a "fresh word" in the daemon's buffer — but on-screen the cursor is somewhere else (after pasted text, mid-word, etc.). When boundary fires, `_check_and_correct` happily processes the 2-3 letter buffer content, hits a false-positive pair, and `correct()` issues backspaces. Backspaces eat **on-screen** chars (last 2-3 chars left of cursor — not the chars in the daemon's buffer), then types the false-positive replacement. Result: tail of an unrelated word mangled.
+
+The tricky part: from the daemon's `correct: 'cv' -> 'см' (extra='', deleted=3)` log line, behavior looks correct — exactly 3 chars stripped, exactly 3 typed. The mismatch lives in the gap between the daemon's buffer-frame-of-reference and the on-screen frame-of-reference, which the daemon cannot see.
+
+**Discovery path.** Initial misdiagnosis: orchestrator constructed an elaborate "cursor desync via mouse-click followed by paste" theory across two long advisor calls. User pushback ("у меня всё не так", "я ничего не делаю") repeatedly corrected direction. The breakthrough was a single live reproduction of `ог → ju` after the user's `arrow + backspace + retype` sequence — confirmed by the now-instrumented `word_buffer.clear: reason=cursor-move` log lines from PR #17. Lesson: the symptom (`tail of word mangled`) is one user-perceived event but two technical causes — both need to be present for the bug to reach the screen.
+
+**Fix.** Boundary-observation flag — see DECISIONS.md 2026-05-08 (late) entry. PR #18 (commit `1aef293`) and PR #19 (commit `79f7f9e`). `KeyboardMonitor._can_correct_next_word: bool` set False at every external buffer-loss site; checked at `_check_and_correct` entry; skip + log + re-arm via `try/finally`. INV-003 codifies the constraint.
+
+**Recognize next time.**
+
+- Log shows `_check_and_correct: skipping correction (no observed boundary before word=...)` after a `word_buffer.clear: reason=...` event — that's the new fix path firing correctly. Absence of these in scenarios where you'd expect them = regression.
+- Pre-fix log signature: `correct: 'XX' -> 'YY' (extra='', deleted=3)` for 2-character X, immediately preceded (within seconds) by one or more `word_buffer.clear: reason=mouse-down|cursor-move|app-switch|cmd-shortcut` lines. The combination is the smoking gun: short word + recent external clear.
+- User report style: "two letters at the tail of [long word] turned into [short Russian/Latin sequence]" — visually the change is on the wrong characters because of the on-screen cursor position.
+- 272-pair false-positive enumeration: latin→russian and russian→latin tables archived in `docs/archive/session-resume-history/2026-05.md` under session-4 retrospective. Useful when assessing whether a newly-observed pair is novel or part of the known set.
+
+**Date.** 2026-05-08, session 4.
+
+---
+
 ## Format for new entries
 
 ```markdown

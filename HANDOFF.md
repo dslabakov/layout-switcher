@@ -5,46 +5,36 @@
 
 ## Status
 
-**Session 3 complete (2026-05-08).** 14+1 PRs merged (PR-A through PR-J + 2 hotfixes + a PR-I test-fix follow-up). All 4 audit-flagged threading fragilities closed. 2 pre-existing upstream bugs found via interactive smoke-test (E-0002 modifier-flag bleed, E-0003 Tab-as-boundary on Cmd+Tab). 117 → 195 tests. Daemon comprehensively defended across thread, exception, permission, and install paths.
+**Session 4 complete (2026-05-08).** Tail-of-word mangle bug class closed via INV-003 (boundary-observation flag). 4 PRs landed: #16 + #17 instrumented hotkey/undo and WordBuffer paths; #18 added the flag with mouse / cursor-move / app-switch coverage; #19 extended with Cmd-modifier branch. 195 → 205 tests. User is monitoring in production for regressions.
 
 ## Read first
 
-1. `CLAUDE.md` — orchestrator-only mode + ARCHITECTURAL INVARIANTS (INV-001/INV-002 unchanged).
-2. `SESSION_RESUME.md` — current state + carry-overs after the campaign.
-3. `PLAN.md` → "Next Session — Start Here" — pick next scope.
-4. `docs/reference/DECISIONS.md` § 2026-05-08 — threading-fragility resolution architecture (queue-based ownership pattern); read this if touching `_handle_queue_item`, `_detection_worker`, or `AutoCorrector.correct/undo/finalize_correction`.
-5. `ERRORS.md` § E-0002, E-0003 — recently-fixed pre-existing bugs; both have regression-guard tests.
+1. `CLAUDE.md` — orchestrator-only mode + INV-001/INV-002/**INV-003** (the new one).
+2. `SESSION_RESUME.md` — current state + carry-overs. **Read this before touching `_check_and_correct` or `_tap_callback`** — INV-003's `_can_correct_next_word` flag is load-bearing.
+3. `PLAN.md` → "Next Session — Start Here". Adjacent gaps to INV-003 (backspace-into-empty, Ctrl-shortcuts) are the natural next pickups when user reports them.
+4. `docs/reference/DECISIONS.md` § 2026-05-08 (late) — trust model rationale and rejected alternatives (validator length threshold; Accessibility API).
+5. `ERRORS.md` § E-0004 — bug class this session closed; recognition cues for regressions.
 
-## Delta (since session 2 end)
+## Delta (since session 3 end)
 
-- Diagnostic logging available via `debug: true` in `~/.config/layout-switcher/config.yaml` or `--debug` CLI flag. PR-A.
-- Configurable hotkey now actually wired (`config.hotkey_convert` parsed; PR-C). Parser rejects malformed strings gracefully.
-- Persistent correction stats at `~/.config/layout-switcher/stats.json` — atomic write, JSON `{"count": N, "date": "YYYY-MM-DD"}`. PR-D.
-- Threading fixes via queue-message pattern — `("clear",)`, `("complete",)`, plus `finalize_correction()` deferred-flip. See DECISIONS § 2026-05-08.
-- Permission watchdog: NSTimer on main thread polls `CGPreflight*` every 10s; status-bar icon goes orange on revocation, green on restore. PR-F.
-- Exception safety: `_tap_callback` and `_detection_worker` have try/except; worker calls `finalize_correction()` in `finally` (idempotent). PR-G.
-- Preflight TCC guard at entry of `correct()` and `undo()` — prevents partial-deletion garbage if permissions revoked mid-session. PR-H.
-- `setup.sh` now enforces INV-001 — refuses to proceed if `python3` in PATH is not arm64 on Apple Silicon. PR-I.
-- `build_wordlist.py` exits 1 with loud warning if `/usr/share/dict/words` missing. PR-I.
-- `docs/reference/DELEGATION.md` — centralized delegation-prompt boilerplate (no-destructive block, wordlist trap, smoke-gate criteria, branch naming).
-- Memory: `feedback_step_by_step_smoke_testing.md` — drive interactive smoke-tests step-by-step instead of dumping the full pipeline.
+- **INV-003** added: `KeyboardMonitor._can_correct_next_word` flag — gates `_check_and_correct` against firing when the daemon didn't directly observe the preceding boundary. Set False by mouse-down / cursor-move / app-switch / Cmd-modifier; re-armed True via `try/finally` in `_check_and_correct`.
+- Logging instrumentation: `_handle_hotkey` entry + branches, `correct()` / `undo()` happy-paths, `invalidate_undo` with `reason=`, `WordBuffer.clear` with `reason=` and `prev_buffer=`, `add_char` empty→non-empty transition. PRs #16 + #17.
+- 272-pair false-positive table (latin↔russian 2-letter pairs that pass the dictionary check): enumeration archived in `docs/archive/session-resume-history/2026-05.md` session-4 entry.
+- Memory: `feedback_listen_when_user_says_off_track.md` — when user says "у меня всё не так", treat as evidence the hypothesis is hostile to reality, not as a dispute about details.
 
-## How to start session 4
+## How to start session 5
 
-1. `git status` — should be clean on `main` at `2f5a179` or later. `launchctl print gui/$(id -u)/com.layout-switcher` → `state = running` (daemon was restarted at session 3 end). If not, bootstrap.
-2. Tail log: `tail -5 ~/.config/layout-switcher/layout-switcher.log` should show "started with full permissions" + the new debug entries (since `debug: true` is now on in user's config).
-3. Read `SESSION_RESUME.md` carry-overs and `PLAN.md` "Next Session — Start Here". Most campaign-driven work is done; remaining items are minor follow-ups + audit candidates that weren't picked up.
-4. If you're about to touch threading code in `keyboard_monitor.py` or `auto_corrector.py` — read `docs/reference/DECISIONS.md` § 2026-05-08 first. The queue-ownership pattern is load-bearing.
+1. `git status` clean on main at `79f7f9e` or later. Daemon should be `state = running` (rebooted at session 4 end on new code).
+2. `tail -10 ~/.config/layout-switcher/layout-switcher.log` should show recent typing activity. Look for `_check_and_correct: skipping correction (no observed boundary before word=...)` lines after edit/paste/click events — those confirm INV-003 is firing in production.
+3. If user reports a fresh tail-of-word mangle: cross-reference timestamp with log; check whether the preceding event was covered (mouse-down / cursor-move / app-switch / Cmd-shortcut → INV-003 should have fired, regression). If preceding event was backspace-into-empty or Ctrl-shortcut → that's the known adjacent gap, ship the corresponding extension.
+4. If touching `_check_and_correct` or `_tap_callback` for any reason: re-read INV-003 in `INVARIANTS.md` and the test cases in `tests/test_keyboard_monitor.py` (search for `_can_correct_next_word`). The `try/finally` re-arm is critical — easy to miss on refactor.
 
 ## Known traps
 
-- All session-2 traps (INV-001 arm64, INV-002 TCC target, no `Python.app` grant) still apply.
-- **Synthetic CGEvents must clear modifier flags** (`CGEventSetFlags(ev, 0)`) before `CGEventPost`. Removed in any future refactor → manual hotkey breaks again with delete-by-word + app-shortcut artifacts. Regression-guarded by tests in `test_auto_corrector.py`. ERRORS.md E-0002.
-- **`\t` (Tab) must NOT be in `WordBuffer.BOUNDARIES`** — Cmd+Tab triggers Tab keydown; if Tab is a word boundary, phantom corrections fire in destination apps. Regression-guarded. ERRORS.md E-0003.
-- **`AutoCorrector.correct()` and `undo()` no longer flip `_is_correcting=False` on return** — caller (worker) MUST call `finalize_correction()` after replay drain. Worker does this in `finally`. If a future caller invokes `correct()` outside the worker pattern, it must pair with `finalize_correction()` or the daemon silently freezes (tap routes all keys to replay buffer).
-- **`_tap_callback` exceptions are swallowed and logged** — if behavior gets weird and unit tests are silent, grep the log for `Unhandled exception in _tap_callback`.
-- **Cwd inheritance across chained Bash calls is unreliable after agent worktrees** — explicit `cd /Users/slabakov/dev/Layoutswitcher` at the top of merge-and-sync chains.
-- **Test that touches install/output paths must take an `output_path` parameter** — never let a test write to shared state via worktree symlink. Wordlist clobber incident in PR-I.
+- All session-2 + session-3 traps still apply (INV-001 arm64, INV-002 TCC target, synthetic CGEvent flag clearing for E-0002, Tab-not-in-BOUNDARIES for E-0003, queue-ownership pattern for thread safety, output_path test parameterization).
+- **`_can_correct_next_word` re-arm via `try/finally`** — if a future refactor moves the flag-set-True out of the `finally` block, exception paths in `_check_and_correct` will leave the flag False forever and corrections will silently never fire again. Regression-guarded by tests but easy to miss in code review.
+- **The flag covers 4 reset paths only**: mouse-down, cursor-move, app-switch, Cmd-modifier. Backspace into empty buffer and Ctrl-modifier are KNOWN GAPS (deliberately deferred). Don't claim INV-003 closes those without extending the implementation.
+- **`gh pr create` defaults to upstream when origin is a fork.** Always pass `--repo dslabakov/layout-switcher` explicitly. Session 4 hit this once: PR #18's first attempt landed in moiz2306/layout-switcher#2 and had to be closed and re-opened. Now in DELEGATION.md prompt boilerplate as a reminder.
 
 ---
 
