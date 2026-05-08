@@ -216,7 +216,7 @@ class KeyboardMonitor:
 
         try:
             if event_type == kCGEventLeftMouseDown:
-                self._auto_corrector.invalidate_undo()
+                self._auto_corrector.invalidate_undo(reason="mouse-down")
                 self._word_buffer.clear()
                 return event
 
@@ -238,11 +238,12 @@ class KeyboardMonitor:
             flags = CGEventGetFlags(event)
 
             if self._is_hotkey(flags, keycode):
+                logger.debug("hotkey detected, enqueuing")
                 self._detection_queue.put(("hotkey", None))
                 return None
 
             if self._is_cursor_move(keycode):
-                self._auto_corrector.invalidate_undo()
+                self._auto_corrector.invalidate_undo(reason="cursor-move")
                 self._word_buffer.clear()
                 return event
 
@@ -284,7 +285,7 @@ class KeyboardMonitor:
         """
         msg_type = item[0]
         if msg_type == "clear":
-            self._auto_corrector.invalidate_undo()
+            self._auto_corrector.invalidate_undo(reason="app-switch")
             self._word_buffer.clear()
             return False
         if msg_type == "complete":
@@ -394,15 +395,23 @@ class KeyboardMonitor:
             return self._layout_mapper.convert(boundary, "en_to_ru")
 
     def _handle_hotkey(self):
-        if self._auto_corrector.has_undoable_correction():
+        has_undoable = self._auto_corrector.has_undoable_correction()
+        last_word = self._last_completed_word
+        logger.debug("_handle_hotkey: has_undoable=%s, last_completed_word=%r", has_undoable, last_word)
+        if has_undoable:
+            logger.debug("_handle_hotkey: routing to undo()")
             self._auto_corrector.undo()
-        elif self._last_completed_word is not None:
-            word, boundary = self._last_completed_word
+        elif last_word is not None:
+            word, boundary = last_word
             en_version, ru_version = self._layout_mapper.convert_word(word)
             if self._layout_mapper.is_cyrillic(word):
+                logger.debug("_handle_hotkey: routing to manual_convert(%r -> %r), boundary=%r", word, en_version, boundary)
                 self._auto_corrector.manual_convert(word, en_version, boundary)
             else:
+                logger.debug("_handle_hotkey: routing to manual_convert(%r -> %r), boundary=%r", word, ru_version, boundary)
                 self._auto_corrector.manual_convert(word, ru_version, boundary)
+        else:
+            logger.debug("_handle_hotkey: no undoable, no last_completed_word — no-op")
 
     def _get_char_from_event(self, event) -> str | None:
         from Quartz import CGEventKeyboardGetUnicodeString

@@ -70,7 +70,9 @@ class AutoCorrector:
             return False
         return (time.time() - self._last_correction.timestamp) < UNDO_TIMEOUT
 
-    def invalidate_undo(self):
+    def invalidate_undo(self, reason: str = "unspecified") -> None:
+        if self._last_correction is not None:
+            logger.debug("invalidate_undo: cleared _last_correction (reason=%s)", reason)
         self._last_correction = None
 
     def add_to_replay_buffer(self, char: str):
@@ -106,6 +108,10 @@ class AutoCorrector:
             self._type_string(boundary)
             if extra:
                 self._type_string(extra)
+            logger.debug(
+                "correct: '%s' -> '%s' (extra=%r, deleted=%d)",
+                original, corrected, extra, delete_count,
+            )
             self._last_correction = CorrectionRecord(
                 original=original,
                 corrected=corrected,
@@ -133,6 +139,10 @@ class AutoCorrector:
             time.sleep(BLOCK_DELAY)
             self._type_string(rec.original)
             self._type_string(rec.boundary)
+            logger.debug(
+                "undo: restoring '%s' -> '%s' (boundary=%r)",
+                rec.corrected, rec.original, rec.boundary,
+            )
             self._last_correction = None
 
     def finalize_correction(self):
